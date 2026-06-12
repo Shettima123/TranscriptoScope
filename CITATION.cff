@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use TranscriptoScope in research, please cite the software release and the underlying statistical packages used in your analysis."
+title: "TranscriptoScope"
+version: "0.4.3"
+date-released: "2026-06-11"
+type: software
+license: MIT
+authors:
+  - family-names: Abdulkadir
+    given-names: Abubakar
+    name-particle: Dr.
+    affiliation: "Southern University A and M"
+repository-code: "https://github.com/Shettima123/TranscriptoScope"
+url: "https://github.com/Shettima123/TranscriptoScope/releases/tag/v0.4.3"
+abstract: "TranscriptoScope is a local Windows-friendly Shiny application for differential expression analysis, functional enrichment, and ranked pathway analysis using established R and Bioconductor workflows."
+keywords:
+  - RNA-seq
+  - differential expression
+  - DESeq2
+  - Shiny
+  - over-representation analysis
+  - pathway analysis
+  - transcriptomics
+preferred-citation:
+  type: article
+  title: "TranscriptoScope: a local Windows application for differential expression, functional enrichment, and ranked pathway analysis"
+  authors:
+    - family-names: Abdulkadir
+      given-names: Abubakar
+      affiliation: "Southern University A and M"
+  status: unpublished
+  notes: "Manuscript in preparation. Replace this entry with the final article citation when available."

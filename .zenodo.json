@@ -1,0 +1,24 @@
+{
+  "title": "TranscriptoScope",
+  "upload_type": "software",
+  "description": "TranscriptoScope is a local Windows-friendly Shiny application for differential expression analysis, functional enrichment, and ranked pathway analysis using established R and Bioconductor workflows.",
+  "creators": [
+    {
+      "name": "Abdulkadir, Abubakar",
+      "affiliation": "Southern University A and M"
+    }
+  ],
+  "license": "MIT",
+  "keywords": [
+    "RNA-seq",
+    "differential expression",
+    "DESeq2",
+    "Shiny",
+    "over-representation analysis",
+    "pathway analysis",
+    "transcriptomics"
+  ],
+  "access_right": "open",
+  "related_identifiers": [],
+  "notes": "Users should cite the software release and the underlying statistical packages used in their analysis, including DESeq2 and fgsea where applicable."
+}

@@ -1,0 +1,4 @@
+"key","label","scientific_name","dataset","taxonomy_id","assembly","file","source","downloaded_utc","rows"
+"yeast_scerevisiae","Yeast (Saccharomyces cerevisiae)","Saccharomyces cerevisiae","scerevisiae_gene_ensembl","559292","R64-1-1","yeast_scerevisiae_ensembl.csv","https://www.ensembl.org/biomart/martservice","2026-06-10 04:19:08 UTC",7127
+"human_hsapiens","Human (Homo sapiens)","Homo sapiens","hsapiens_gene_ensembl","9606","GRCh38.p14","human_hsapiens_ensembl.csv","https://www.ensembl.org/biomart/martservice","2026-06-10 04:19:08 UTC",86411
+"fruitfly_dmelanogaster","Fruit fly (Drosophila melanogaster)","Drosophila melanogaster","dmelanogaster_gene_ensembl","7227","BDGP6.54","fruitfly_dmelanogaster_ensembl.csv","https://www.ensembl.org/biomart/martservice","2026-06-10 04:19:08 UTC",24254
