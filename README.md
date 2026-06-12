@@ -1,5 +1,7 @@
 # TranscriptoScope
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20659462.svg)](https://doi.org/10.5281/zenodo.20659462)
+
 A Windows-friendly Shiny app for differential gene expression analysis with DESeq2, normalized expression analysis, ORA enrichment, and ranked pathway analysis.
 
 Created by Dr. Abubakar Abdulkadir, Southern University A and M.
@@ -12,6 +14,7 @@ This release can be installed for the current Windows user with a double-click i
 - Installation instructions are in [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
 - Release notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 - Citation metadata is in [CITATION.cff](CITATION.cff).
+- DOI for the v0.4.3 release: [10.5281/zenodo.20659462](https://doi.org/10.5281/zenodo.20659462).
 - License terms are in [LICENSE](LICENSE).
 - Privacy notes are in [PRIVACY.md](PRIVACY.md).
 - Support instructions are in [SUPPORT.md](SUPPORT.md).

@@ -12,6 +12,7 @@ authors:
     affiliation: "Southern University A and M"
 repository-code: "https://github.com/Shettima123/TranscriptoScope"
 url: "https://github.com/Shettima123/TranscriptoScope/releases/tag/v0.4.3"
+doi: "10.5281/zenodo.20659462"
 abstract: "TranscriptoScope is a local Windows-friendly Shiny application for differential expression analysis, functional enrichment, and ranked pathway analysis using established R and Bioconductor workflows."
 keywords:
   - RNA-seq
