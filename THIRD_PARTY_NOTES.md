@@ -1,6 +1,6 @@
 # Third-Party Notes
 
-This app is a wrapper around R and Bioconductor packages. Before public distribution, verify dependency licenses for the exact versions you ship.
+This app is a wrapper around R and Bioconductor packages. The TranscriptoScope MIT license applies to the app source code and project-authored documentation only. It does not relicense R, Bioconductor packages, annotation databases, GO data, KEGG data, or other third-party resources.
 
 Core dependencies:
 
@@ -28,10 +28,14 @@ Bundled gene annotation CSVs and GO gene set CSVs are generated from Ensembl Bio
 - `hsapiens_gene_ensembl`
 - `dmelanogaster_gene_ensembl`
 
-Before public distribution, verify the current Ensembl terms and attribution guidance for the exact annotation release you ship. Keep `annotations/manifest.csv` and `gene_sets/manifest.csv` with the package so users can see the source dataset, assembly, and download timestamp.
+Keep `annotations/manifest.csv` and `gene_sets/manifest.csv` with the package so users can see the source dataset, assembly, and download timestamp. Ensembl data and BioMart-derived exports remain subject to Ensembl/EMBL-EBI terms and attribution guidance.
+
+GO term-to-gene mappings are generated from BioMart GO annotation fields. Gene Ontology Consortium data products are licensed under CC BY 4.0, and public redistribution should preserve GO attribution, release/version information where available, and license notice.
 
 ## KEGG Pathways
 
-This release includes pre-cached KEGG pathway mappings for yeast, human, and fruit fly under `gene_sets/cache/`. If a cache is missing, the app can query the KEGG REST API for the selected organism and recreate it locally.
+This public release does not bundle KEGG pathway mapping CSV files. The `gene_sets/cache/` directory contains only a README in the release package.
 
-Before distributing a package that includes cached KEGG-derived mappings, verify KEGG access, redistribution, citation, and licensing requirements for your intended audience. KEGG's public Kyoto University/GenomeNet services request academic use, while commercial/web-service use may require licensing through Pathway Solutions.
+When a user selects KEGG, the app can query KEGG REST for the selected organism and cache the resulting term-to-gene table locally on that user's machine. These locally generated cache files are KEGG-derived data and are not covered by the TranscriptoScope MIT license. Do not redistribute generated KEGG cache files unless you have confirmed that redistribution is permitted for your use case.
+
+KEGG's public legal page states that academic users may freely use the KEGG website, while non-academic use requires a commercial license. Pathway Solutions provides KEGG commercial licensing, including licenses that can cover web/API access. Users and redistributors are responsible for following the KEGG terms that apply to their institution and use case.

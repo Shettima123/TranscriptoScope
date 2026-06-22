@@ -26,6 +26,8 @@ $excludeNames = @(
   ".git",
   ".Rproj.user",
   "__pycache__",
+  "outputs",
+  "work_logs",
   "shiny-err.log",
   "shiny-out.log"
 )
@@ -35,6 +37,9 @@ Get-ChildItem -Path $appDir -Force |
   ForEach-Object {
     Copy-Item -Path $_.FullName -Destination $stagingDir -Recurse -Force
   }
+
+Get-ChildItem -Path (Join-Path $stagingDir "gene_sets\cache") -Filter "*_kegg.csv" -File -ErrorAction SilentlyContinue |
+  Remove-Item -Force
 
 if (Test-Path $zipPath) {
   Remove-Item -LiteralPath $zipPath -Force

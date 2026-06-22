@@ -1,0 +1,25 @@
+TranscriptoScope Notice
+=======================
+
+The MIT license in this repository applies only to TranscriptoScope source code,
+documentation, scripts, and other original materials created for this project.
+It does not relicense third-party R packages, biological databases, annotation
+resources, or user-generated data.
+
+Bundled resources in the public release:
+
+- Ensembl-derived gene annotation CSVs for Saccharomyces cerevisiae, Homo
+  sapiens, and Drosophila melanogaster.
+- Ensembl BioMart-derived GO term-to-gene mapping CSVs for the same organisms.
+
+Those biological resources remain subject to their original source terms and
+attribution requirements. The included manifests record source URLs, datasets,
+assemblies, and download timestamps. Users should cite Ensembl, Gene Ontology,
+DESeq2, fgsea, and any other resources used in a specific analysis.
+
+KEGG pathway mapping CSV files are not bundled in the public release. KEGG
+support is implemented as optional user-initiated access to KEGG REST, with
+results cached locally on the user's machine. Locally generated KEGG cache files
+are KEGG-derived data, are not covered by the TranscriptoScope MIT license, and
+should not be redistributed unless the redistributor has the required permission
+or license.

@@ -18,6 +18,10 @@ if (nrow(kegg_rows) == 0) {
   stop("No KEGG gene set databases are listed in gene_sets/manifest.csv.", call. = FALSE)
 }
 
+message("This script creates local KEGG-derived cache files from KEGG REST.")
+message("Generated KEGG cache files are third-party data and are not covered by the TranscriptoScope MIT license.")
+message("Do not redistribute generated KEGG cache files unless your use case permits redistribution under KEGG terms.")
+
 for (key in kegg_rows$key) {
   message(sprintf("Downloading %s", key))
   gene_sets <- read_builtin_gene_sets(

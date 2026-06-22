@@ -12,7 +12,8 @@ Use this checklist before publishing TranscriptoScope for free public download.
 
 - Keep `THIRD_PARTY_NOTES.md` in the release.
 - Verify exact redistribution terms for bundled Ensembl-derived annotation and GO resources.
-- Verify KEGG redistribution terms for cached pathway resources before advertising KEGG as bundled for all public use.
+- Confirm the public release does not include `gene_sets/cache/*_kegg.csv` unless explicit KEGG redistribution permission or licensing has been obtained.
+- Document KEGG as optional user-initiated REST access with local user caching, not as a bundled MIT-licensed resource.
 - Preserve package citations for DESeq2, fgsea, R, Shiny, and other major dependencies.
 
 ## 3. Create The GitHub Repository
@@ -23,14 +24,14 @@ Use this checklist before publishing TranscriptoScope for free public download.
 - Add screenshots from `docs/images`.
 - Enable GitHub Issues.
 
-## 4. Create The First GitHub Release
+## 4. Create The GitHub Release
 
-- Tag: `v0.4.3`
-- Title: `TranscriptoScope Windows v0.4.3`
+- Tag: `v0.4.4`
+- Title: `TranscriptoScope Windows v0.4.4`
 - Upload release asset:
-  - `public_release/release_assets/TranscriptoScope_Windows_v0.4.3.zip`
+  - `public_release/release_assets/TranscriptoScope_Windows_v0.4.4.zip`
 - Paste the release body from:
-  - `public_release/release_assets/GITHUB_RELEASE_BODY_v0.4.3.md`
+  - `public_release/release_assets/GITHUB_RELEASE_BODY_v0.4.4.md`
 - Include the SHA256 checksum.
 
 ## 5. Enable Zenodo DOI

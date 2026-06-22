@@ -17,6 +17,7 @@ $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "$appName
 $launcherScript = Join-Path $installDir "Launch_TranscriptoScope.vbs"
 $wscriptPath = Join-Path $env:WINDIR "System32\wscript.exe"
 $uninstallBatch = Join-Path $installDir "Uninstall_TranscriptoScope.bat"
+$iconPath = Join-Path $installDir "www\favicon.ico"
 $localAppData = [System.IO.Path]::GetFullPath($env:LOCALAPPDATA)
 $legacyAppName = "DESeq2 DGE Workbench"
 $legacyInstallDir = Join-Path $env:LOCALAPPDATA "DESeq2DGEWorkbench"
@@ -77,7 +78,7 @@ New-AppShortcut `
   -Arguments "`"$launcherScript`"" `
   -WorkingDirectory $installDir `
   -Description "Launch $appName" `
-  -IconLocation "$wscriptPath,2"
+  -IconLocation $iconPath
 
 New-AppShortcut `
   -ShortcutPath $startMenuShortcut `
@@ -85,13 +86,14 @@ New-AppShortcut `
   -Arguments "`"$launcherScript`"" `
   -WorkingDirectory $installDir `
   -Description "Launch $appName" `
-  -IconLocation "$wscriptPath,2"
+  -IconLocation $iconPath
 
 New-AppShortcut `
   -ShortcutPath (Join-Path $startMenuDir "Uninstall $appName.lnk") `
   -TargetPath $uninstallBatch `
   -WorkingDirectory $installDir `
-  -Description "Uninstall $appName"
+  -Description "Uninstall $appName" `
+  -IconLocation $iconPath
 
 if (-not $NoDesktopShortcut) {
   New-AppShortcut `
@@ -100,7 +102,7 @@ if (-not $NoDesktopShortcut) {
     -Arguments "`"$launcherScript`"" `
     -WorkingDirectory $installDir `
     -Description "Launch $appName" `
-    -IconLocation "$wscriptPath,2"
+    -IconLocation $iconPath
 }
 
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TranscriptoScope"
@@ -112,7 +114,7 @@ Set-ItemProperty -Path $uninstallKey -Name "DisplayVersion" -Value $appVersion
 Set-ItemProperty -Path $uninstallKey -Name "Publisher" -Value "Dr. Abubakar Abdulkadir, Southern University A and M"
 Set-ItemProperty -Path $uninstallKey -Name "InstallLocation" -Value $installDir
 Set-ItemProperty -Path $uninstallKey -Name "UninstallString" -Value "`"$uninstallBatch`""
-Set-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value $launcherScript
+Set-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value $iconPath
 
 if (-not $SkipPackageInstall) {
   Write-Host ""

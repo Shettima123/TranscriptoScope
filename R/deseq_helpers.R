@@ -910,6 +910,7 @@ run_deseq2_workflow <- function(
     warnings = unique(workflow_warnings),
     genes_tested = nrow(filtered_counts),
     samples_tested = ncol(filtered_counts),
+    analysis_metadata = analysis_metadata,
     condition_col = condition_col,
     treatment_level = treatment_level,
     reference_level = reference_level,
@@ -1075,10 +1076,12 @@ run_normalized_expression_workflow <- function(
     warnings = unique(c(workflow_warnings, sprintf("Expression scale used: %s.", resolved_scale))),
     genes_tested = nrow(expression_matrix),
     samples_tested = ncol(expression_matrix),
+    analysis_metadata = aligned_metadata,
     condition_col = condition_col,
     treatment_level = treatment_level,
     reference_level = reference_level,
     batch_col = NULL,
+    expression_scale = resolved_scale,
     alpha = alpha,
     input_type = "normalized",
     workflow_label = "Normalized expression"
@@ -1467,7 +1470,7 @@ run_rosbys_lab_enrichment <- function(
 
   for (direction in direction_specs) {
     selected <- result_table[direction$keep, , drop = FALSE]
-    selected$regulation <- direction$group
+    selected$regulation <- rep(direction$group, nrow(selected))
     selected_tables[[direction$group]] <- selected
     selected_norm <- unique(normalize_gene_ids(selected$gene_id, case_sensitive))
     selected_norm <- selected_norm[nzchar(selected_norm)]
@@ -1994,22 +1997,29 @@ format_pathway_preview <- function(pathway_table, n = 100, show_ids = FALSE) {
   preview
 }
 
-make_pathway_summary_plot <- function(pathway_table, top_n = 20, padj_cutoff = 0.05, show_ids = FALSE) {
-  if (!requireNamespace("ggplot2", quietly = TRUE)) {
-    stop("ggplot2 is not installed. Run scripts/install_packages.R first.", call. = FALSE)
-  }
+select_top_pathway_results <- function(pathway_table, top_n = 20, padj_cutoff = 0.05) {
   plot_data <- pathway_table[is.finite(pathway_table$NES), , drop = FALSE]
   if (nrow(plot_data) == 0) {
-    stop("No pathway enrichment scores are available to plot.", call. = FALSE)
+    return(plot_data)
   }
   significant <- plot_data[!is.na(plot_data$padj) & plot_data$padj < padj_cutoff, , drop = FALSE]
   if (nrow(significant) > 0) {
     plot_data <- significant
   }
-  plot_data <- utils::head(
+  utils::head(
     plot_data[order(plot_data$padj, plot_data$pvalue, -abs(plot_data$NES), na.last = TRUE), , drop = FALSE],
     top_n
   )
+}
+
+make_pathway_summary_plot <- function(pathway_table, top_n = 20, padj_cutoff = 0.05, show_ids = FALSE) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("ggplot2 is not installed. Run scripts/install_packages.R first.", call. = FALSE)
+  }
+  plot_data <- select_top_pathway_results(pathway_table, top_n = top_n, padj_cutoff = padj_cutoff)
+  if (nrow(plot_data) == 0) {
+    stop("No pathway enrichment scores are available to plot.", call. = FALSE)
+  }
   labels <- if (isTRUE(show_ids)) {
     paste0(plot_data$term_name, " [", plot_data$term_id, "]")
   } else {
@@ -2234,10 +2244,14 @@ run_fold_change_workflow <- function(data, require_adjusted_p = FALSE, fold_chan
     warnings = unique(warnings),
     genes_tested = nrow(standardized$result_table),
     samples_tested = NA_integer_,
+    analysis_metadata = NULL,
     condition_col = NULL,
     treatment_level = NULL,
     reference_level = NULL,
     batch_col = NULL,
+    fold_change_column = standardized$fold_change_column,
+    adjusted_p_column = standardized$adjusted_p_column,
+    fold_change_scale = standardized$fold_change_scale,
     alpha = alpha,
     input_type = if (require_adjusted_p) "fc_padj" else "fc_only",
     workflow_label = if (require_adjusted_p) "Fold changes and adjusted p-values" else "Fold changes only"
@@ -2464,10 +2478,405 @@ draw_ma_plot <- function(workflow_result) {
   }
 }
 
-write_result_bundle <- function(workflow_result, output_dir, lfc_cutoff = 1) {
+repro_scalar <- function(value, default = "not set") {
+  if (is.null(value) || length(value) == 0) {
+    return(default)
+  }
+  if (is.factor(value)) {
+    value <- as.character(value)
+  }
+  if (is.logical(value)) {
+    value <- ifelse(is.na(value), "NA", ifelse(value, "TRUE", "FALSE"))
+  }
+  value <- as.character(value)
+  value[is.na(value) | !nzchar(value)] <- default
+  paste(value, collapse = ", ")
+}
+
+repro_r_string <- function(value) {
+  if (is.null(value) || length(value) == 0 || is.na(value[1]) || !nzchar(as.character(value[1]))) {
+    return("NULL")
+  }
+  value <- as.character(value[1])
+  value <- gsub("\\", "\\\\", value, fixed = TRUE)
+  value <- gsub("\"", "\\\"", value, fixed = TRUE)
+  sprintf("\"%s\"", value)
+}
+
+repro_r_number <- function(value, default = "NA_real_") {
+  if (is.null(value) || length(value) == 0 || is.na(value[1])) {
+    return(default)
+  }
+  format(value[1], scientific = FALSE, trim = TRUE)
+}
+
+repro_r_bool <- function(value) {
+  if (isTRUE(value)) "TRUE" else "FALSE"
+}
+
+flatten_reproducibility_settings <- function(settings, prefix = character()) {
+  if (is.null(settings) || !is.list(settings)) {
+    return(data.frame(setting = character(), value = character(), stringsAsFactors = FALSE))
+  }
+
+  rows <- lapply(names(settings), function(name) {
+    value <- settings[[name]]
+    label <- paste(c(prefix, name), collapse = ".")
+    if (is.list(value) && !is.data.frame(value)) {
+      flatten_reproducibility_settings(value, c(prefix, name))
+    } else {
+      data.frame(
+        setting = label,
+        value = repro_scalar(value),
+        stringsAsFactors = FALSE
+      )
+    }
+  })
+  do.call(rbind, rows)
+}
+
+export_analysis_metadata <- function(metadata) {
+  metadata <- as.data.frame(metadata, stringsAsFactors = FALSE)
+  sample_ids <- rownames(metadata)
+  if (is.null(sample_ids) || any(is.na(sample_ids) | !nzchar(sample_ids))) {
+    sample_ids <- seq_len(nrow(metadata))
+  }
+  metadata$sample_id <- sample_ids
+  metadata <- metadata[c("sample_id", setdiff(names(metadata), "sample_id"))]
+  rownames(metadata) <- NULL
+  metadata
+}
+
+export_bundle_analysis_inputs <- function(workflow_result, output_dir) {
+  if (!is.null(workflow_result$dds) && requireNamespace("DESeq2", quietly = TRUE)) {
+    count_matrix <- tryCatch(
+      DESeq2::counts(workflow_result$dds, normalized = FALSE),
+      error = function(err) NULL
+    )
+    if (!is.null(count_matrix)) {
+      count_export <- as.data.frame(count_matrix, check.names = FALSE)
+      count_export$gene_id <- rownames(count_export)
+      count_export <- count_export[c("gene_id", setdiff(names(count_export), "gene_id"))]
+      rownames(count_export) <- NULL
+      utils::write.csv(
+        count_export,
+        file = file.path(output_dir, "analysis_count_matrix.csv"),
+        row.names = FALSE
+      )
+    }
+  }
+
+  if (!is.null(workflow_result$analysis_metadata)) {
+    utils::write.csv(
+      export_analysis_metadata(workflow_result$analysis_metadata),
+      file = file.path(output_dir, "analysis_metadata.csv"),
+      row.names = FALSE
+    )
+  }
+}
+
+repro_regulation_counts <- function(result_table, alpha, lfc_cutoff) {
+  if (!"log2FoldChange" %in% names(result_table)) {
+    return(data.frame(category = "Rows", count = nrow(result_table), stringsAsFactors = FALSE))
+  }
+
+  has_padj <- "padj" %in% names(result_table) && any(!is.na(result_table$padj))
+  if (has_padj) {
+    up <- sum(!is.na(result_table$padj) & result_table$padj < alpha & result_table$log2FoldChange > lfc_cutoff, na.rm = TRUE)
+    down <- sum(!is.na(result_table$padj) & result_table$padj < alpha & result_table$log2FoldChange < -lfc_cutoff, na.rm = TRUE)
+  } else {
+    up <- sum(result_table$log2FoldChange > lfc_cutoff, na.rm = TRUE)
+    down <- sum(result_table$log2FoldChange < -lfc_cutoff, na.rm = TRUE)
+  }
+  data.frame(
+    category = c("Up regulated", "Down regulated", "Not significant or not called"),
+    count = c(up, down, max(0, nrow(result_table) - up - down)),
+    stringsAsFactors = FALSE
+  )
+}
+
+markdown_table <- function(data) {
+  if (is.null(data) || nrow(data) == 0) {
+    return(character())
+  }
+  data[] <- lapply(data, function(column) gsub("|", "\\|", as.character(column), fixed = TRUE))
+  header <- sprintf("| %s |", paste(names(data), collapse = " | "))
+  divider <- sprintf("| %s |", paste(rep("---", ncol(data)), collapse = " | "))
+  body <- apply(data, 1, function(row) sprintf("| %s |", paste(row, collapse = " | ")))
+  c(header, divider, body)
+}
+
+build_reproduce_r_code <- function(workflow_result, lfc_cutoff = 1, reproducibility = NULL) {
+  alpha_literal <- repro_r_number(workflow_result$alpha, "0.05")
+  lfc_literal <- repro_r_number(lfc_cutoff, "1")
+  input_type <- if (is.null(workflow_result$input_type)) "counts" else workflow_result$input_type
+
+  lines <- c(
+    "# Reproduce the TranscriptoScope analysis bundle.",
+    "# The script detects its own folder when run with Rscript; otherwise it uses the current working directory.",
+    "args <- commandArgs(trailingOnly = FALSE)",
+    "file_arg <- args[grepl(\"^--file=\", args)]",
+    "bundle_dir <- if (length(file_arg) > 0) dirname(normalizePath(sub(\"^--file=\", \"\", file_arg[1]), winslash = \"/\", mustWork = TRUE)) else getwd()",
+    "helper_file <- file.path(bundle_dir, \"transcriptoscope_deseq_helpers.R\")",
+    "fallback_helper <- file.path(Sys.getenv(\"TRANSCRIPTOSCOPE_APP_DIR\", unset = \".\"), \"R\", \"deseq_helpers.R\")",
+    "if (file.exists(helper_file)) {",
+    "  source(helper_file)",
+    "} else if (file.exists(fallback_helper)) {",
+    "  source(fallback_helper)",
+    "} else {",
+    "  stop(\"Could not find transcriptoscope_deseq_helpers.R. Set TRANSCRIPTOSCOPE_APP_DIR to the app folder.\", call. = FALSE)",
+    "}",
+    "",
+    sprintf("alpha <- %s", alpha_literal),
+    sprintf("lfc_cutoff <- %s", lfc_literal),
+    ""
+  )
+
+  if (identical(input_type, "counts")) {
+    batch_literal <- if (is.null(workflow_result$batch_col)) "NULL" else "\"batch\""
+    lines <- c(
+      lines,
+      "# analysis_count_matrix.csv and analysis_metadata.csv are the exact post-preprocessing/filtering inputs used by DESeq2.",
+      "count_matrix <- prepare_count_matrix(read_dge_table(file.path(bundle_dir, \"analysis_count_matrix.csv\")))",
+      "metadata <- prepare_sample_metadata(read_dge_table(file.path(bundle_dir, \"analysis_metadata.csv\")))",
+      "result <- run_deseq2_workflow(",
+      "  count_matrix = count_matrix,",
+      "  metadata = metadata,",
+      "  condition_col = \"condition\",",
+      sprintf("  treatment_level = %s,", repro_r_string(workflow_result$treatment_level)),
+      sprintf("  reference_level = %s,", repro_r_string(workflow_result$reference_level)),
+      sprintf("  batch_col = %s,", batch_literal),
+      "  min_total_count = 0,",
+      "  alpha = alpha",
+      ")"
+    )
+  } else if (identical(input_type, "normalized")) {
+    lines <- c(
+      lines,
+      "# matrix_values.csv and analysis_metadata.csv are the exact expression matrix and metadata used by the app.",
+      "expression_matrix <- prepare_expression_matrix(read_dge_table(file.path(bundle_dir, \"matrix_values.csv\")))",
+      "metadata <- prepare_sample_metadata(read_dge_table(file.path(bundle_dir, \"analysis_metadata.csv\")))",
+      "result <- run_normalized_expression_workflow(",
+      "  expression_matrix = expression_matrix,",
+      "  metadata = metadata,",
+      sprintf("  condition_col = %s,", repro_r_string(workflow_result$condition_col)),
+      sprintf("  treatment_level = %s,", repro_r_string(workflow_result$treatment_level)),
+      sprintf("  reference_level = %s,", repro_r_string(workflow_result$reference_level)),
+      sprintf("  expression_scale = %s,", repro_r_string(if (is.null(workflow_result$expression_scale)) "auto" else workflow_result$expression_scale)),
+      "  alpha = alpha",
+      ")"
+    )
+  } else {
+    require_adjusted <- identical(input_type, "fc_padj")
+    lines <- c(
+      lines,
+      "# deseq2_results.csv contains the standardized fold-change table used by the app.",
+      "fold_change_table <- read_dge_table(file.path(bundle_dir, \"deseq2_results.csv\"))",
+      "result <- run_fold_change_workflow(",
+      "  data = fold_change_table,",
+      sprintf("  require_adjusted_p = %s,", repro_r_bool(require_adjusted)),
+      sprintf("  fold_change_scale = %s,", repro_r_string(if (is.null(workflow_result$fold_change_scale)) "log2" else workflow_result$fold_change_scale)),
+      "  alpha = alpha",
+      ")"
+    )
+  }
+
+  c(
+    lines,
+    "",
+    "utils::write.csv(result$results, file.path(bundle_dir, \"reproduced_dge_results.csv\"), row.names = FALSE)",
+    "if (!is.null(result$pca_data)) {",
+    "  ggplot2::ggsave(file.path(bundle_dir, \"reproduced_pca_plot.png\"), make_pca_plot(result), width = 7, height = 5, dpi = 160)",
+    "}",
+    "ggplot2::ggsave(file.path(bundle_dir, \"reproduced_volcano_plot.png\"), make_volcano_plot(result$results, result$alpha, lfc_cutoff), width = 7, height = 5, dpi = 160)",
+    "ggplot2::ggsave(file.path(bundle_dir, \"reproduced_regulation_summary_plot.png\"), make_regulation_summary_plot(result$results, result$alpha, lfc_cutoff), width = 7, height = 5, dpi = 160)",
+    ""
+  ) -> lines
+
+  enrichment <- if (is.list(reproducibility$enrichment) && identical(reproducibility$enrichment$status, "run")) {
+    reproducibility$enrichment
+  } else {
+    NULL
+  }
+  if (!is.null(enrichment)) {
+    enrichment_method <- if (is.null(enrichment$method)) "standard" else enrichment$method
+    if (identical(enrichment_method, "rosbys_lab")) {
+      lines <- c(
+        lines,
+        "if (file.exists(file.path(bundle_dir, \"enrichment_gene_sets_used.csv\"))) {",
+        "  enrichment_gene_sets <- read_dge_table(file.path(bundle_dir, \"enrichment_gene_sets_used.csv\"))",
+        "  annotation_info <- NULL",
+        "  protein_file <- file.path(bundle_dir, \"rosbys_lab_protein_coding_universe.csv\")",
+        "  if (file.exists(protein_file)) {",
+        "    protein_ids <- utils::read.csv(protein_file, stringsAsFactors = FALSE, check.names = FALSE)",
+        "    annotation_info <- list(table = data.frame(",
+        "      ensembl_gene_id = protein_ids[[1]],",
+        "      gene_symbol = protein_ids[[1]],",
+        "      gene_biotype = \"protein_coding\",",
+        "      stringsAsFactors = FALSE",
+        "    ))",
+        "  }",
+        "  ora_result <- run_rosbys_lab_enrichment(",
+        "    result_table = result$results,",
+        "    gene_sets = enrichment_gene_sets,",
+        "    annotation_info = annotation_info,",
+        "    alpha = result$alpha,",
+        "    lfc_cutoff = lfc_cutoff,",
+        sprintf("    padj_cutoff = %s,", repro_r_number(enrichment$fdr_cutoff, "0.01")),
+        "    max_terms_per_direction = 5,",
+        "    min_overlap = 2,",
+        sprintf("    case_sensitive = %s", repro_r_bool(enrichment$case_sensitive_custom_matching)),
+        "  )",
+        "  utils::write.csv(format_rosbys_lab_enrichment_export(ora_result$results), file.path(bundle_dir, \"reproduced_rosbys_lab_style_enrichment.csv\"), row.names = FALSE)",
+        "  utils::write.csv(ora_result$selected_table, file.path(bundle_dir, \"reproduced_rosbys_lab_style_selected_genes.csv\"), row.names = FALSE)",
+        "}",
+        ""
+      )
+    } else {
+      lines <- c(
+        lines,
+        "if (file.exists(file.path(bundle_dir, \"enrichment_gene_sets_used.csv\"))) {",
+        "  enrichment_gene_sets <- read_dge_table(file.path(bundle_dir, \"enrichment_gene_sets_used.csv\"))",
+        "  selected <- select_de_genes(",
+        "    result_table = result$results,",
+        "    alpha = result$alpha,",
+        "    lfc_cutoff = lfc_cutoff,",
+        sprintf("    gene_list = %s", repro_r_string(if (is.null(enrichment$selected_deg_list)) "both" else enrichment$selected_deg_list)),
+        "  )",
+        "  ora_result <- run_ora_analysis(",
+        "    universe_genes = result$results$gene_id,",
+        "    selected_genes = selected$genes,",
+        "    gene_sets = enrichment_gene_sets,",
+        sprintf("    min_set_size = %s,", repro_r_number(enrichment$minimum_gene_set_size, "3")),
+        sprintf("    max_set_size = %s,", repro_r_number(enrichment$maximum_gene_set_size, "2000")),
+        sprintf("    padj_cutoff = %s,", repro_r_number(enrichment$fdr_cutoff, "0.1")),
+        sprintf("    case_sensitive = %s", repro_r_bool(enrichment$case_sensitive_custom_matching)),
+        "  )",
+        "  utils::write.csv(ora_result$results, file.path(bundle_dir, \"reproduced_ora_enrichment.csv\"), row.names = FALSE)",
+        "  utils::write.csv(selected$table, file.path(bundle_dir, \"reproduced_ora_selected_genes.csv\"), row.names = FALSE)",
+        "}",
+        ""
+      )
+    }
+  }
+
+  pathway <- if (is.list(reproducibility$pathway) && identical(reproducibility$pathway$status, "run")) {
+    reproducibility$pathway
+  } else {
+    NULL
+  }
+  if (!is.null(pathway)) {
+    lines <- c(
+      lines,
+      "if (file.exists(file.path(bundle_dir, \"pathway_gene_sets_used.csv\"))) {",
+      "  pathway_gene_sets <- read_dge_table(file.path(bundle_dir, \"pathway_gene_sets_used.csv\"))",
+      "  pathway_result <- run_preranked_pathway_analysis(",
+      "    result_table = result$results,",
+      "    gene_sets = pathway_gene_sets,",
+      sprintf("    rank_metric = %s,", repro_r_string(if (is.null(pathway$ranking_metric)) "log2fc" else pathway$ranking_metric)),
+      sprintf("    min_set_size = %s,", repro_r_number(pathway$minimum_pathway_size, "3")),
+      sprintf("    max_set_size = %s,", repro_r_number(pathway$maximum_pathway_size, "500")),
+      sprintf("    padj_cutoff = %s,", repro_r_number(pathway$pathway_fdr_cutoff, "0.05")),
+      sprintf("    gene_padj_cutoff = %s,", repro_r_number(pathway$maximum_gene_fdr_included, "1")),
+      sprintf("    absolute_ranking = %s", repro_r_bool(pathway$use_absolute_ranking_scores)),
+      "  )",
+      "  utils::write.csv(pathway_result$results, file.path(bundle_dir, \"reproduced_pathway_analysis.csv\"), row.names = FALSE)",
+      "  utils::write.csv(pathway_result$ranked_table, file.path(bundle_dir, \"reproduced_pathway_ranked_genes.csv\"), row.names = FALSE)",
+      "}",
+      ""
+    )
+  }
+
+  lines
+}
+
+write_reproducibility_files <- function(workflow_result, output_dir, lfc_cutoff = 1, reproducibility = NULL) {
+  code_lines <- build_reproduce_r_code(workflow_result, lfc_cutoff, reproducibility)
+  utils::write.table(
+    data.frame(x = code_lines),
+    file = file.path(output_dir, "reproduce_analysis.R"),
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+
+  rmd_lines <- c(
+    "---",
+    "title: \"TranscriptoScope Reproducibility Code\"",
+    "output: html_document",
+    "---",
+    "",
+    "This R Markdown file reruns the analysis from the exported result-bundle files and the recorded settings.",
+    "",
+    "```{r reproduce-transcriptoscope-analysis, message=FALSE, warning=FALSE}",
+    code_lines,
+    "```"
+  )
+  writeLines(rmd_lines, file.path(output_dir, "reproduce_analysis.Rmd"))
+}
+
+write_analysis_report <- function(workflow_result, output_dir, lfc_cutoff = 1, reproducibility = NULL) {
+  generated_at <- if (!is.null(reproducibility$generated_at)) reproducibility$generated_at else format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
+  settings <- flatten_reproducibility_settings(reproducibility)
+  regulation <- repro_regulation_counts(workflow_result$results, workflow_result$alpha, lfc_cutoff)
+  bundle_files <- sort(list.files(output_dir, all.files = FALSE))
+
+  lines <- c(
+    "# TranscriptoScope Analysis Report",
+    "",
+    sprintf("Generated: %s", repro_scalar(generated_at)),
+    "",
+    "## Analysis",
+    sprintf("- Workflow: %s", repro_scalar(workflow_result$workflow_label, "DESeq2")),
+    sprintf("- Input type: %s", repro_scalar(workflow_result$input_type)),
+    sprintf("- Reference group: %s", repro_scalar(workflow_result$reference_level)),
+    sprintf("- Comparison group: %s", repro_scalar(workflow_result$treatment_level)),
+    sprintf("- Batch column: %s", repro_scalar(workflow_result$batch_col)),
+    sprintf("- Genes tested: %s", repro_scalar(workflow_result$genes_tested)),
+    sprintf("- Samples tested: %s", repro_scalar(workflow_result$samples_tested)),
+    sprintf("- Adjusted p-value threshold: %s", repro_scalar(workflow_result$alpha)),
+    sprintf("- Absolute log2 fold-change cutoff used for plots/calls: %s", repro_scalar(lfc_cutoff)),
+    "",
+    "## Regulation Counts",
+    markdown_table(regulation),
+    "",
+    "## Reproducibility Files",
+    "- `analysis_report.md`: this report.",
+    "- `reproduce_analysis.Rmd`: executable R Markdown for rerunning the exported analysis.",
+    "- `reproduce_analysis.R`: the same rerun code as a plain R script.",
+    "- `analysis_count_matrix.csv`: exact post-preprocessing/post-filtering count matrix used by DESeq2, when the run used raw counts.",
+    "- `analysis_metadata.csv`: exact metadata table used by the analysis, when sample metadata was required.",
+    "- `enrichment_gene_sets_used.csv` and `pathway_gene_sets_used.csv`: exact matched gene-set tables used by ORA/pathway tabs, when those tabs were run.",
+    "- `session_info.txt`: R session and package versions from the export session.",
+    "",
+    "## Recorded App Settings"
+  )
+
+  if (nrow(settings) > 0) {
+    lines <- c(lines, markdown_table(settings))
+  } else {
+    lines <- c(lines, "No additional UI settings were recorded.")
+  }
+
+  lines <- c(
+    lines,
+    "",
+    "## Warnings",
+    if (length(workflow_result$warnings) > 0) paste("- ", workflow_result$warnings) else "None recorded.",
+    "",
+    "## Bundle Files",
+    paste("- `", bundle_files, "`", sep = "")
+  )
+
+  writeLines(lines, file.path(output_dir, "analysis_report.md"))
+}
+
+write_result_bundle <- function(workflow_result, output_dir, lfc_cutoff = 1, reproducibility = NULL) {
   if (!dir.exists(output_dir)) {
     dir.create(output_dir, recursive = TRUE)
   }
+
+  export_bundle_analysis_inputs(workflow_result, output_dir)
 
   utils::write.csv(
     workflow_result$results,
@@ -2535,6 +2944,9 @@ write_result_bundle <- function(workflow_result, output_dir, lfc_cutoff = 1) {
     }
   )
   writeLines(summary_lines, file.path(output_dir, "analysis_summary.txt"))
+  writeLines(capture.output(utils::sessionInfo()), file.path(output_dir, "session_info.txt"))
+  write_reproducibility_files(workflow_result, output_dir, lfc_cutoff, reproducibility)
+  write_analysis_report(workflow_result, output_dir, lfc_cutoff, reproducibility)
 
   invisible(output_dir)
 }

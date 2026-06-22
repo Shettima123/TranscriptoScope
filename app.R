@@ -9,6 +9,14 @@ library(shiny)
 
 source(file.path("R", "deseq_helpers.R"), local = TRUE)
 
+app_version <- tryCatch(
+  trimws(readLines("VERSION", warn = FALSE)[1]),
+  error = function(err) "0.4.4"
+)
+if (!nzchar(app_version) || is.na(app_version)) {
+  app_version <- "0.4.4"
+}
+
 matrix_modes <- c("counts", "normalized")
 annotation_dir <- file.path("annotations")
 annotation_manifest <- tryCatch(read_annotation_manifest(annotation_dir), error = function(err) data.frame())
@@ -108,6 +116,26 @@ body {
   letter-spacing: 0;
 }
 
+.title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #99D0C9;
+  border-radius: 999px;
+  background: #E6F5F2;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 5px 9px;
+}
+
 .app-title p {
   margin: 6px 0 0;
   color: var(--muted);
@@ -123,6 +151,28 @@ body {
   font-size: 13px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.header-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.refresh-button {
+  border-color: #99D0C9;
+  color: var(--accent-dark);
+  background: #F4FBF9;
+  font-weight: 700;
+  min-width: 92px;
+}
+
+.refresh-button:hover,
+.refresh-button:focus {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+  background: #E6F5F2;
 }
 
 .layout-grid {
@@ -321,6 +371,11 @@ th {
     white-space: normal;
   }
 
+  .header-actions {
+    align-items: flex-start;
+    margin-top: 12px;
+  }
+
   .layout-grid {
     grid-template-columns: 1fr;
   }
@@ -334,8 +389,14 @@ th {
 
 ui <- fluidPage(
   tags$head(
-    tags$title("TranscriptoScope"),
-    tags$style(HTML(app_css))
+    tags$title(sprintf("TranscriptoScope v%s", app_version)),
+    tags$link(rel = "icon", type = "image/x-icon", href = "favicon.ico"),
+    tags$style(HTML(app_css)),
+    tags$script(HTML(
+      "Shiny.addCustomMessageHandler('transcriptoscope-refresh', function(message) {
+        window.location.reload();
+      });"
+    ))
   ),
   div(
     class = "app-shell",
@@ -343,11 +404,19 @@ ui <- fluidPage(
       class = "app-header",
       div(
         class = "app-title",
-        h1("TranscriptoScope"),
+        div(
+          class = "title-row",
+          h1("TranscriptoScope"),
+          span(class = "version-badge", sprintf("v%s", app_version))
+        ),
         p("Windows-friendly transcriptomics analysis for raw counts, expression matrices, fold-change tables, enrichment, and pathways"),
-        p(class = "creator-line", "Created by Dr. Abubakar Abdulkadir | Southern University A and M")
+        p(class = "creator-line", "Created by Dr. Abubakar Abdulkadir | Dr. Rosby's Lab, Southern University A and M")
       ),
-      div(class = "status-line", textOutput("runtime_status", inline = TRUE))
+      div(
+        class = "header-actions",
+        actionButton("refresh_app", "Refresh", class = "refresh-button", title = "Reload the app"),
+        div(class = "status-line", textOutput("runtime_status", inline = TRUE))
+      )
     ),
     div(
       class = "layout-grid",
@@ -590,6 +659,8 @@ ui <- fluidPage(
               div(
                 class = "download-grid",
                 downloadButton("download_pathway_results", "Pathway Results CSV"),
+                downloadButton("download_significant_pathways", "Significant Pathways CSV"),
+                downloadButton("download_pathway_top_plot", "Top Plotted Pathways CSV"),
                 downloadButton("download_pathway_ranks", "Ranked Genes CSV")
               )
             ),
@@ -648,6 +719,10 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   app_dir <- normalizePath(".", mustWork = TRUE)
+
+  observeEvent(input$refresh_app, {
+    session$sendCustomMessage("transcriptoscope-refresh", list())
+  }, ignoreInit = TRUE)
 
   output$runtime_status <- renderText({
     deseq_version <- if (requireNamespace("DESeq2", quietly = TRUE)) {
@@ -971,7 +1046,7 @@ server <- function(input, output, session) {
 
   output$custom_gene_set_upload <- renderUI({
     if (!identical(input$gene_set_source, "custom")) {
-      return(div(class = "soft-note", "Using the selected built-in GO or KEGG source. Custom GMT/CSV upload is optional. KEGG mappings are included for yeast, human, and fruit fly; internet is only needed to refresh a missing cache."))
+      return(div(class = "soft-note", "Using the selected built-in GO or optional KEGG source. Custom GMT/CSV upload is optional. KEGG pathway mappings are not bundled; selecting KEGG downloads them from KEGG REST into a local user cache, so internet access and compliance with KEGG terms are required."))
     }
 
     tagList(
@@ -1158,6 +1233,24 @@ server <- function(input, output, session) {
   analysis_error <- reactiveVal(NULL)
   pathway_result <- reactiveVal(NULL)
   pathway_error <- reactiveVal(NULL)
+
+  significant_pathway_results <- function(pathway) {
+    req(pathway)
+    if (is.null(pathway$results) || !"padj" %in% names(pathway$results)) {
+      return(pathway$results[FALSE, , drop = FALSE])
+    }
+    cutoff <- pathway$padj_cutoff
+    if (is.null(cutoff) || length(cutoff) != 1 || is.na(cutoff)) {
+      cutoff <- if (is.null(input$pathway_padj_cutoff)) 0.05 else input$pathway_padj_cutoff
+    }
+    pathway$results[!is.na(pathway$results$padj) & pathway$results$padj < cutoff, , drop = FALSE]
+  }
+
+  top_plotted_pathway_results <- function(pathway) {
+    req(pathway)
+    top_n <- if (is.null(input$pathway_top_n) || is.na(input$pathway_top_n)) 20 else input$pathway_top_n
+    select_top_pathway_results(pathway$results, top_n = top_n, padj_cutoff = pathway$padj_cutoff)
+  }
 
   observeEvent(input$run_analysis, {
     analysis_result(NULL)
@@ -1408,7 +1501,7 @@ server <- function(input, output, session) {
       return(div(class = "alert-block warning", "Run the DGE analysis first. The enrichment tab uses the current result table automatically."))
     }
     if (identical(input$gene_set_source, "custom") && is.null(input$geneset_file)) {
-      return(div(class = "alert-block warning", "Upload a custom GMT/CSV/TSV gene set file, or choose a built-in GO or KEGG collection."))
+      return(div(class = "alert-block warning", "Upload a custom GMT/CSV/TSV gene set file, or choose a built-in GO collection or optional KEGG source."))
     }
 
     tryCatch(
@@ -1787,6 +1880,28 @@ server <- function(input, output, session) {
     }
   )
 
+  output$download_significant_pathways <- downloadHandler(
+    filename = function() {
+      sprintf("significant_pathways_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      pathway <- pathway_result()
+      req(pathway)
+      utils::write.csv(significant_pathway_results(pathway), file, row.names = FALSE)
+    }
+  )
+
+  output$download_pathway_top_plot <- downloadHandler(
+    filename = function() {
+      sprintf("top_plotted_pathways_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      pathway <- pathway_result()
+      req(pathway)
+      utils::write.csv(top_plotted_pathway_results(pathway), file, row.names = FALSE)
+    }
+  )
+
   output$download_pathway_ranks <- downloadHandler(
     filename = function() {
       sprintf("pathway_ranked_genes_%s.csv", format(Sys.Date(), "%Y%m%d"))
@@ -1865,20 +1980,111 @@ server <- function(input, output, session) {
       result <- analysis_result()
       req(result)
       annotated <- annotated_results()
+      uploaded_name <- function(upload) {
+        if (is.null(upload) || is.null(upload$name) || !nzchar(upload$name)) {
+          return(NA_character_)
+        }
+        upload$name
+      }
 
       bundle_dir <- file.path(tempdir(), sprintf("dge_bundle_%s", as.integer(Sys.time())))
       dir.create(bundle_dir, recursive = TRUE)
       export_result <- result
       export_result$results <- annotated
-      write_result_bundle(export_result, bundle_dir, effective_lfc_cutoff())
 
       annotation <- tryCatch(selected_annotation(), error = function(err) NULL)
+      ora <- tryCatch(enrichment_result(), error = function(err) NULL)
+      selected <- tryCatch(selected_enrichment_genes(), error = function(err) NULL)
+      pathway <- pathway_result()
+      enrichment_gene_sets_used <- tryCatch(gene_sets_for_enrichment(), error = function(err) NULL)
+      enrichment_gene_set_summary <- if (is.null(enrichment_gene_sets_used)) NULL else attr(enrichment_gene_sets_used, "gene_set_summary")
+      pathway_gene_sets_used <- if (is.null(pathway)) NULL else tryCatch(pathway_gene_sets(), error = function(err) NULL)
+      pathway_gene_set_summary <- if (is.null(pathway_gene_sets_used)) {
+        if (is.null(pathway)) NULL else attr(pathway, "gene_set_summary")
+      } else {
+        attr(pathway_gene_sets_used, "gene_set_summary")
+      }
+      app_version <- tryCatch(readLines(file.path(app_dir, "VERSION"), warn = FALSE, n = 1), error = function(err) "unknown")
+      bundle_reproducibility <- list(
+        generated_at = format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z"),
+        app_version = app_version,
+        input = list(
+          input_type = input$input_type,
+          input_file = if (isTRUE(input$use_example)) example_file_for_mode(input$input_type) else uploaded_name(input$count_file),
+          metadata_file = if (isTRUE(input$use_example)) "bundled example or inferred metadata" else uploaded_name(input$metadata_file),
+          used_bundled_example = isTRUE(input$use_example)
+        ),
+        analysis = list(
+          condition_column = input$condition_col,
+          reference_group = input$reference_level,
+          comparison_group = input$treatment_level,
+          batch_column = if (identical(input$batch_col, "__none__")) "none" else input$batch_col,
+          adjusted_p_value_threshold = input$alpha,
+          minimum_fold_change = input$min_fold_change,
+          absolute_log2_fold_change_cutoff = effective_lfc_cutoff(),
+          expression_scale = if (is.null(input$expression_scale)) NA_character_ else input$expression_scale,
+          fold_change_scale = if (is.null(input$fold_change_scale)) NA_character_ else input$fold_change_scale
+        ),
+        preprocessing = list(
+          minimum_cpm = input$preprocess_min_cpm,
+          minimum_samples = input$preprocess_min_samples,
+          transform_pseudocount = input$preprocess_pseudocount,
+          use_cpm_filtered_counts_for_deseq2 = isTRUE(input$use_preprocessed_counts),
+          minimum_total_count_after_preprocessing = if (identical(input$input_type, "counts")) input$min_total_count else NA_real_
+        ),
+        annotation = list(
+          species = input$annotation_species,
+          match_mode = input$annotation_match,
+          annotation_rows_exported = if (is.null(annotation)) 0 else nrow(annotation$table)
+        ),
+        enrichment = if (is.null(ora)) {
+          list(status = "not run")
+        } else {
+          list(
+            status = "run",
+            method = input$enrichment_mode,
+            gene_set_organism = input$gene_set_source,
+            gene_set_collection = input$go_domain,
+            gene_set_file = uploaded_name(input$geneset_file),
+            selected_deg_list = input$ora_gene_list,
+            minimum_gene_set_size = input$ora_min_set_size,
+            maximum_gene_set_size = input$ora_max_set_size,
+            fdr_cutoff = input$ora_padj_cutoff,
+            top_terms_to_plot = input$ora_top_n,
+            case_sensitive_custom_matching = isTRUE(input$ora_case_sensitive),
+            gene_set_label = if (is.null(enrichment_gene_set_summary)) NA_character_ else enrichment_gene_set_summary$label
+          )
+        },
+        pathway = if (is.null(pathway)) {
+          list(status = "not run")
+        } else {
+          list(
+            status = "run",
+            gene_set_organism = input$pathway_gene_set_source,
+            pathway_collection = input$pathway_collection,
+            ranking_metric = input$pathway_rank_metric,
+            minimum_pathway_size = input$pathway_min_set_size,
+            maximum_pathway_size = input$pathway_max_set_size,
+            pathway_fdr_cutoff = input$pathway_padj_cutoff,
+            maximum_gene_fdr_included = input$pathway_gene_padj_cutoff,
+            use_absolute_ranking_scores = isTRUE(input$pathway_absolute_ranking),
+            top_pathways_to_plot = input$pathway_top_n,
+            show_pathway_ids = isTRUE(input$pathway_show_ids),
+            gene_set_label = if (is.null(pathway_gene_set_summary)) NA_character_ else pathway_gene_set_summary$label
+          )
+        }
+      )
+
+      helper_source <- file.path(app_dir, "R", "deseq_helpers.R")
+      if (file.exists(helper_source)) {
+        file.copy(helper_source, file.path(bundle_dir, "transcriptoscope_deseq_helpers.R"), overwrite = TRUE)
+      }
+      write_result_bundle(export_result, bundle_dir, effective_lfc_cutoff(), reproducibility = bundle_reproducibility)
+
       if (!is.null(annotation)) {
         utils::write.csv(annotation$table, file.path(bundle_dir, "ensembl_annotation.csv"), row.names = FALSE)
       }
 
-      ora <- tryCatch(enrichment_result(), error = function(err) NULL)
-      selected <- tryCatch(selected_enrichment_genes(), error = function(err) NULL)
       if (!is.null(ora)) {
         if (identical(ora$mode, "rosbys_lab")) {
           utils::write.csv(format_rosbys_lab_enrichment_export(ora$results), file.path(bundle_dir, "rosbys_lab_style_enrichment.csv"), row.names = FALSE)
@@ -1890,11 +2096,26 @@ server <- function(input, output, session) {
       if (!is.null(selected) && (is.null(ora) || !identical(ora$mode, "rosbys_lab"))) {
         utils::write.csv(selected$table, file.path(bundle_dir, "ora_selected_genes.csv"), row.names = FALSE)
       }
-      pathway <- pathway_result()
+      if (!is.null(enrichment_gene_sets_used)) {
+        utils::write.csv(enrichment_gene_sets_used, file.path(bundle_dir, "enrichment_gene_sets_used.csv"), row.names = FALSE)
+      }
+      if (!is.null(ora) && identical(ora$mode, "rosbys_lab") && !is.null(ora$protein_coding_summary)) {
+        utils::write.csv(
+          data.frame(gene_id = ora$protein_coding_summary$universe_ids, stringsAsFactors = FALSE),
+          file.path(bundle_dir, "rosbys_lab_protein_coding_universe.csv"),
+          row.names = FALSE
+        )
+      }
       if (!is.null(pathway)) {
         utils::write.csv(pathway$results, file.path(bundle_dir, "pathway_analysis.csv"), row.names = FALSE)
+        utils::write.csv(significant_pathway_results(pathway), file.path(bundle_dir, "pathway_significant_pathways.csv"), row.names = FALSE)
+        utils::write.csv(top_plotted_pathway_results(pathway), file.path(bundle_dir, "pathway_top_plotted_pathways.csv"), row.names = FALSE)
         utils::write.csv(pathway$ranked_table, file.path(bundle_dir, "pathway_ranked_genes.csv"), row.names = FALSE)
       }
+      if (!is.null(pathway_gene_sets_used)) {
+        utils::write.csv(pathway_gene_sets_used, file.path(bundle_dir, "pathway_gene_sets_used.csv"), row.names = FALSE)
+      }
+      write_analysis_report(export_result, bundle_dir, effective_lfc_cutoff(), bundle_reproducibility)
 
       oldwd <- setwd(bundle_dir)
       on.exit(setwd(oldwd), add = TRUE)

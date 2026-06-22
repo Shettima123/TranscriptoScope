@@ -1,6 +1,6 @@
 # TranscriptoScope
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20659462.svg)](https://doi.org/10.5281/zenodo.20659462)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20659461.svg)](https://doi.org/10.5281/zenodo.20659461)
 
 A Windows-friendly Shiny app for differential gene expression analysis with DESeq2, normalized expression analysis, ORA enrichment, and ranked pathway analysis.
 
@@ -14,8 +14,10 @@ This release can be installed for the current Windows user with a double-click i
 - Installation instructions are in [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
 - Release notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 - Citation metadata is in [CITATION.cff](CITATION.cff).
-- DOI for the v0.4.3 release: [10.5281/zenodo.20659462](https://doi.org/10.5281/zenodo.20659462).
+- Zenodo concept DOI for all releases: [10.5281/zenodo.20659461](https://doi.org/10.5281/zenodo.20659461).
 - License terms are in [LICENSE](LICENSE).
+- Third-party resource notices are in [NOTICE](NOTICE) and [THIRD_PARTY_NOTES.md](THIRD_PARTY_NOTES.md).
+- Resource redistribution details are in [docs/RESOURCE_LICENSING.md](docs/RESOURCE_LICENSING.md).
 - Privacy notes are in [PRIVACY.md](PRIVACY.md).
 - Support instructions are in [SUPPORT.md](SUPPORT.md).
 
@@ -34,9 +36,9 @@ If you use TranscriptoScope in research, cite the specific software release and 
 - Visualize fold-change tables without requiring raw samples
 - Export differential expression results and normalized counts
 - Generate PCA, volcano, and MA plots
-- Run over-representation analysis (ORA) from the current DEG result using built-in Ensembl GO gene sets, cached KEGG pathways, or custom gene sets
+- Run over-representation analysis (ORA) from the current DEG result using built-in Ensembl GO gene sets, optional user-initiated KEGG access, or custom gene sets
 - Run Rosby's Lab-style ORA with separate up/down enrichment, protein-coding background, minimum overlap 2, default enrichment FDR 0.01, and top 5 terms per direction
-- Run preranked pathway analysis with the full current DGE result, bundled GO or KEGG collections, normalized enrichment scores, FDR values, and leading-edge genes
+- Run preranked pathway analysis with the full current DGE result, bundled GO collections or optional KEGG access, normalized enrichment scores, FDR values, and leading-edge genes
 - Plot top positive and negative pathways, a running enrichment curve, and a leading-edge expression heatmap when sample-level values are available
 - Annotate DEG tables with bundled Ensembl mappings for yeast, human, and fruit fly
 - Includes small bundled example data for testing
@@ -119,12 +121,12 @@ The `Rosby's Lab-style ORA` mode uses the lab's focused enrichment workflow:
 - displays up to 5 terms per direction
 - exports lab-style enrichment columns
 
-The app uses the selected built-in GO/KEGG source or custom gene set file, so results depend on the chosen collection and its release.
+The app uses the selected built-in GO source, optional KEGG source, or custom gene set file, so results depend on the chosen collection and its release.
 
 Supported built-in collections are:
 
 - Ensembl BioMart GO mappings for yeast, human, and fruit fly, with optional filtering to biological process, molecular function, or cellular component
-- KEGG pathways for yeast, human, and fruit fly, cached in `gene_sets/cache/`
+- Optional KEGG pathways for yeast, human, and fruit fly. KEGG mapping files are not bundled in the public release; selecting KEGG queries KEGG REST and creates a local user cache.
 
 The custom upload option is only for advanced use with your own gene sets. It is not for the count matrix. Custom gene set inputs can be:
 
@@ -140,7 +142,7 @@ After running the DGE analysis, open the Pathway Analysis tab. The app automatic
 
 The default ranking is log2 fold change. Signed `-log10(p-value)` is also available when p-values are present. `Maximum gene FDR included` defaults to `1`, which keeps the full ranked list; lowering it filters genes before pathway analysis and should be done deliberately.
 
-Choose the organism and a bundled GO or KEGG collection, then set the pathway size and FDR limits. The results include:
+Choose the organism and a bundled GO collection or optional KEGG source, then set the pathway size and FDR limits. The results include:
 
 - enrichment score and normalized enrichment score
 - raw and adjusted pathway p-values
@@ -152,6 +154,17 @@ Choose the organism and a bundled GO or KEGG collection, then set the pathway si
 
 Fold-change table inputs can run pathway analysis, but they do not contain sample-level values, so the heatmap is unavailable. The Pathway Analysis tab uses the Bioconductor `fgsea` package.
 
+## Result Bundle And Reproducibility Code
+
+The Downloads tab includes a `Result Bundle` zip. Each bundle contains the exported result tables and plots plus:
+
+- `analysis_report.md` - a run-specific report with workflow settings, thresholds, warnings, regulation counts, and bundle contents
+- `reproduce_analysis.Rmd` - executable R Markdown code for rerunning the exported analysis from the bundle files
+- `reproduce_analysis.R` - the same rerun code as a plain R script
+- `analysis_count_matrix.csv` and `analysis_metadata.csv` when the run used DESeq2 counts, containing the exact post-preprocessing/post-filtering data used by the model
+- `enrichment_gene_sets_used.csv` and `pathway_gene_sets_used.csv` when ORA or pathway analysis was run, containing the matched gene-set tables used by those tabs
+- `session_info.txt` with the R and package versions from the export session
+
 ## Built-In Ensembl Annotation
 
 The Annotation panel can add gene symbol, description, biotype, chromosome, start, and end columns to the result table. The bundled annotations are:
@@ -162,7 +175,7 @@ The Annotation panel can add gene symbol, description, biotype, chromosome, star
 
 The app can match result IDs automatically against Ensembl/SGD IDs or gene symbols. Full annotations are included offline in the `annotations/` folder.
 
-## Built-In GO And KEGG Gene Sets
+## Built-In GO Gene Sets And Optional KEGG Access
 
 The Enrichment tab includes offline GO term-to-gene mappings generated from Ensembl BioMart:
 
@@ -172,7 +185,13 @@ The Enrichment tab includes offline GO term-to-gene mappings generated from Ense
 
 Full GO mappings are included offline in the `gene_sets/` folder.
 
-KEGG pathway mappings for yeast, human, and fruit fly are included in `gene_sets/cache/`. The app can refresh a missing cache from KEGG REST if needed.
+KEGG pathway mappings for yeast, human, and fruit fly are not bundled in the public release. When a user selects KEGG, the app queries KEGG REST and writes a local cache under `gene_sets/cache/`. Those generated cache files are KEGG-derived third-party data, are not covered by the TranscriptoScope MIT license, and should not be redistributed unless the redistributor has the required permission or license.
+
+## License And Third-Party Resources
+
+TranscriptoScope source code and project-authored documentation are released under the MIT license. The MIT license does not apply to third-party R packages, biological databases, Ensembl-derived annotation resources, GO data, KEGG data, or user-generated analysis data.
+
+This public release bundles Ensembl-derived annotation CSVs and Ensembl BioMart-derived GO term-to-gene mappings for yeast, human, and fruit fly. It does not bundle KEGG-derived pathway mapping CSV files. See [NOTICE](NOTICE) and [THIRD_PARTY_NOTES.md](THIRD_PARTY_NOTES.md) for attribution and redistribution notes.
 
 ## Install On Windows
 
@@ -208,7 +227,7 @@ After dependencies are installed:
 Rscript scripts\smoke_test.R
 ```
 
-The smoke test runs DESeq2, ORA, ranked pathway analysis, and pathway plot generation on the bundled example dataset without launching the Shiny interface.
+The smoke test runs DESeq2, GO ORA, ranked pathway analysis, and pathway plot generation on the bundled example dataset without launching the Shiny interface. It does not download KEGG by default. To test optional KEGG REST access, run it with `TRANSCRIPTOSCOPE_TEST_KEGG=1` in the environment.
 
 ## Packaging Direction
 
@@ -228,13 +247,13 @@ For a true installer, see `WINDOWS_PACKAGING.md`. The most practical path is:
 - `sample_data/` - bundled example files for all input modes
 - `sample_data/gene_sets.csv` - small demo gene set file for ORA testing
 - `annotations/` - bundled Ensembl annotation CSVs and manifest
-- `gene_sets/` - bundled Ensembl GO term-to-gene mappings, KEGG source manifest entries, and included KEGG cache
+- `gene_sets/` - bundled Ensembl GO term-to-gene mappings and KEGG source manifest entries; KEGG cache files are generated locally by users and are not included in the public release
 - `scripts/install_packages.R` - dependency installer
 - `scripts/launch_app.R` - local app launcher
 - `scripts/launch_app_window.ps1` - quiet Windows app-window launcher
 - `scripts/download_ensembl_annotations.R` - regeneration script for bundled Ensembl annotations
 - `scripts/download_ensembl_gene_sets.R` - regeneration script for bundled Ensembl GO gene sets
-- `scripts/download_kegg_gene_sets.R` - optional script to pre-cache KEGG pathway mappings from KEGG REST
+- `scripts/download_kegg_gene_sets.R` - optional script to create a local KEGG pathway cache from KEGG REST
 - `scripts/smoke_test.R` - command-line workflow test
 - `scripts/build_release_zip.ps1` - creates the distributable Windows ZIP
 - `Install_TranscriptoScope.bat` - Windows current-user installer

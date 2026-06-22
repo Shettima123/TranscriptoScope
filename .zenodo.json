@@ -20,5 +20,5 @@
   ],
   "access_right": "open",
   "related_identifiers": [],
-  "notes": "Users should cite the software release and the underlying statistical packages used in their analysis, including DESeq2 and fgsea where applicable."
+  "notes": "Users should cite the software release and the underlying statistical packages and biological resources used in their analysis, including DESeq2 and fgsea where applicable. The MIT license applies to TranscriptoScope source code and project-authored documentation, not third-party biological resources."
 }

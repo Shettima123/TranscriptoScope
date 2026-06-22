@@ -129,6 +129,18 @@ stopifnot(nrow(rosbys_lab_ora_result$results) > 0)
 stopifnot(all(c("group", "padj", "genes") %in% names(rosbys_lab_ora_result$results)))
 stopifnot(all(c("group", "FDR", "Pathway size", "Fold enriched") %in% names(format_rosbys_lab_enrichment_export(rosbys_lab_ora_result$results))))
 
+rosbys_lab_up_only_result <- rosbys_lab_test_result
+rosbys_lab_up_only_result$padj[rosbys_lab_up_only_result$log2FoldChange < 0] <- 0.9
+rosbys_lab_up_only <- run_rosbys_lab_enrichment(
+  result_table = rosbys_lab_up_only_result,
+  gene_sets = rosbys_lab_test_sets,
+  annotation_info = annotation_info,
+  alpha = 0.05,
+  lfc_cutoff = 1,
+  padj_cutoff = 1
+)
+stopifnot(nrow(rosbys_lab_up_only$results) > 0)
+
 rosbys_lab_contaminated_sets <- rbind(
   rosbys_lab_test_sets,
   data.frame(
@@ -205,28 +217,32 @@ leading_edge <- pathway_leading_edge_table(pathway_result, pathway_term)
 stopifnot(nrow(leading_edge) > 0)
 
 kegg_ora_result <- NULL
-tryCatch(
-  {
-    kegg_sets <- read_builtin_gene_sets(
-      gene_set_dir = file.path(app_dir, "gene_sets"),
-      gene_set_key = "yeast_scerevisiae_kegg",
-      domain = "kegg_pathway"
-    )
-    prepared_kegg <- prepare_builtin_gene_sets_for_results(raw_result$results, kegg_sets, "auto")
-    kegg_ora_result <- run_ora_analysis(
-      universe_genes = raw_result$results$gene_id,
-      selected_genes = selected_genes$genes,
-      gene_sets = prepared_kegg,
-      min_set_size = 1,
-      max_set_size = 2000,
-      padj_cutoff = 0.1
-    )
-    stopifnot(nrow(kegg_ora_result$results) > 0)
-  },
-  error = function(err) {
-    warning(sprintf("Skipping KEGG smoke test: %s", conditionMessage(err)), call. = FALSE)
-  }
-)
+if (identical(Sys.getenv("TRANSCRIPTOSCOPE_TEST_KEGG"), "1")) {
+  tryCatch(
+    {
+      kegg_sets <- read_builtin_gene_sets(
+        gene_set_dir = file.path(app_dir, "gene_sets"),
+        gene_set_key = "yeast_scerevisiae_kegg",
+        domain = "kegg_pathway"
+      )
+      prepared_kegg <- prepare_builtin_gene_sets_for_results(raw_result$results, kegg_sets, "auto")
+      kegg_ora_result <- run_ora_analysis(
+        universe_genes = raw_result$results$gene_id,
+        selected_genes = selected_genes$genes,
+        gene_sets = prepared_kegg,
+        min_set_size = 1,
+        max_set_size = 2000,
+        padj_cutoff = 0.1
+      )
+      stopifnot(nrow(kegg_ora_result$results) > 0)
+    },
+    error = function(err) {
+      warning(sprintf("Skipping KEGG smoke test: %s", conditionMessage(err)), call. = FALSE)
+    }
+  )
+} else {
+  warning("Skipping optional KEGG smoke test. Set TRANSCRIPTOSCOPE_TEST_KEGG=1 to test user-initiated KEGG REST access.", call. = FALSE)
+}
 
 expression_matrix <- prepare_expression_matrix(
   read_dge_table(file.path(app_dir, "sample_data", "normalized_expression.csv"))
@@ -266,12 +282,18 @@ unlink(bundle_dir, recursive = TRUE, force = TRUE)
 write_result_bundle(raw_result, bundle_dir)
 expected_files <- c(
   "deseq2_results.csv",
+  "analysis_count_matrix.csv",
+  "analysis_metadata.csv",
   "matrix_values.csv",
   "pca_plot.png",
   "volcano_plot.png",
   "regulation_summary_plot.png",
   "ma_plot.png",
-  "analysis_summary.txt"
+  "analysis_summary.txt",
+  "analysis_report.md",
+  "reproduce_analysis.Rmd",
+  "reproduce_analysis.R",
+  "session_info.txt"
 )
 stopifnot(all(file.exists(file.path(bundle_dir, expected_files))))
 

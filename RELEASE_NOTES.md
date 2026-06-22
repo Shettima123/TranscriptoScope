@@ -1,9 +1,19 @@
 # Release Notes
 
+## 0.4.4 - 2026-06-21
+
+- Added a top-level Refresh button that reloads the current Shiny session.
+- Added a Significant Pathways CSV download for ranked pathway-analysis results below the selected pathway FDR cutoff.
+- Added a Top Plotted Pathways CSV download that exports the exact pathway subset used by the Top Pathways plot.
+- Added `pathway_significant_pathways.csv` and `pathway_top_plotted_pathways.csv` to the result bundle when pathway analysis has been run.
+- Shared the top-pathway selection logic between plotting and CSV export to keep displayed and downloaded pathway subsets aligned.
+
 ## 0.4.3 - 2026-06-11
 
 - Made Windows package installation explicitly non-interactive by forcing binary package installs and suppressing source-package prompts.
 - Added package-install progress messages for cleaner Windows runtime validation.
+- Updated public-release licensing notes to clarify that MIT covers TranscriptoScope source/documentation only and that KEGG-derived cache files are not bundled in the public ZIP.
+- Added run-specific `analysis_report.md`, `reproduce_analysis.Rmd`, and `reproduce_analysis.R` files to the result bundle, with exact exported analysis inputs, matched gene-set tables for ORA/pathway reruns, and recorded UI settings.
 
 ## 0.4.2 - 2026-06-11
 
@@ -23,7 +33,7 @@
 
 - Added a Pathway Analysis tab that automatically uses the current DGE result.
 - Added preranked GSEA with the Bioconductor fgsea package.
-- Added built-in GO and KEGG pathway selection for yeast, human, and fruit fly.
+- Added built-in GO selection and optional KEGG pathway selection for yeast, human, and fruit fly.
 - Added controls for ranking metric, pathway size, pathway FDR, optional gene FDR filtering, and absolute ranking.
 - Added normalized enrichment scores, leading-edge genes, pathway summary plots, running enrichment plots, expression heatmaps, and CSV downloads.
 - Added pathway outputs to the downloadable result bundle.
@@ -45,7 +55,7 @@
 - Added the focused ORA workflow with protein-coding background, separate up/down enrichment, minimum overlap 2, default enrichment FDR 0.01, and top 5 displayed terms per direction.
 - Added focused enrichment CSV exports.
 - Included offline Ensembl annotations and GO mappings for yeast, human, and fruit fly.
-- Pre-cached KEGG pathway mappings for yeast, human, and fruit fly.
+- Added optional KEGG pathway support for yeast, human, and fruit fly through KEGG REST and a local user cache.
 - Improved Windows installer metadata and shortcut registration.
 - Added safer uninstall path checks.
 

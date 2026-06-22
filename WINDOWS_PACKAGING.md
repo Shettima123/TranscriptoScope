@@ -19,6 +19,14 @@ Cons: users still need R installed, and package installation happens on first in
 
 Use this when the app workflow is stable.
 
+For a Microsoft Store candidate installer, run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_store_installer.ps1
+```
+
+This builds `outputs\store_installer\TranscriptoScope_Windows_Store_v<VERSION>.exe` with a bundled R runtime and staged R package dependency library. See `docs\MICROSOFT_STORE_SUBMISSION.md` for Store-specific notes and validation status.
+
 Recommended tools:
 
 - Inno Setup for the installer
@@ -79,9 +87,9 @@ Cons: more engineering, harder packaging, more installer testing.
 - Test batch design with known non-confounded metadata.
 - Test built-in GO enrichment for each bundled organism.
 - Test standard and Rosby's Lab-style ORA.
-- Test KEGG enrichment from the included `gene_sets/cache/` files.
+- Confirm release ZIPs do not include `gene_sets/cache/*_kegg.csv` unless explicit KEGG redistribution permission or licensing has been obtained.
+- Test optional KEGG enrichment with internet access and confirm the local user cache is created.
 - Test ranked GO and KEGG pathway analysis, pathway plots, leading-edge downloads, and sample-level heatmaps.
-- Test KEGG enrichment with internet access after deleting cache files, if refreshing from KEGG REST is expected.
 - Confirm the `annotations/` and `gene_sets/` folders are included in the zip or installer.
 - Test on a clean Windows VM.
 - Confirm exported CSVs open in Excel.

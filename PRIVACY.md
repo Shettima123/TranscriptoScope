@@ -10,7 +10,7 @@ TranscriptoScope is designed to run locally on the user's Windows computer.
 
 ## Network Use
 
-The Windows installer may use the internet to install R package dependencies when they are not already available. The app includes bundled organism resources for common workflows. If a required cached KEGG resource is missing, the app may query the KEGG REST API to recreate the local cache.
+The Windows installer may use the internet to install R package dependencies when they are not already available. The app includes bundled Ensembl-derived annotation and GO resources for common workflows. If the user selects KEGG, the app may query the KEGG REST API and write a local user cache for the selected organism.
 
 ## Research Use
 

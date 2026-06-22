@@ -8,3 +8,7 @@ renv/staging/
 *.tar.gz
 RInno_installer/
 results/
+outputs/
+work_logs/
+gene_sets/cache/*_kegg.csv
+!gene_sets/cache/README.md
