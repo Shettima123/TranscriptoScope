@@ -11,10 +11,10 @@ source(file.path("R", "deseq_helpers.R"), local = TRUE)
 
 app_version <- tryCatch(
   trimws(readLines("VERSION", warn = FALSE)[1]),
-  error = function(err) "0.4.4"
+  error = function(err) "0.4.5"
 )
 if (!nzchar(app_version) || is.na(app_version)) {
-  app_version <- "0.4.4"
+  app_version <- "0.4.5"
 }
 
 matrix_modes <- c("counts", "normalized")
@@ -44,7 +44,8 @@ gene_set_collection_choices <- c(
   "GO: biological process" = "go_biological_process",
   "GO: molecular function" = "go_molecular_function",
   "GO: cellular component" = "go_cellular_component",
-  "KEGG pathways" = "kegg_pathway"
+  "KEGG pathways" = "kegg_pathway",
+  "TF.Target.GTRD" = "tf_target_gtrd"
 )
 enrichment_mode_choices <- c(
   "Standard ORA" = "standard",
@@ -70,6 +71,19 @@ example_file_for_mode <- function(mode) {
     fc_padj = "fold_changes_padj.csv",
     fc_only = "fold_changes_only.csv",
     "counts.csv"
+  )
+}
+
+gene_set_collection_info <- function(collection_choice, default = "go_all") {
+  collection_choice <- if (is.null(collection_choice) || !nzchar(collection_choice)) default else collection_choice
+  switch(
+    collection_choice,
+    go_biological_process = list(collection = "go", domain = "biological_process"),
+    go_molecular_function = list(collection = "go", domain = "molecular_function"),
+    go_cellular_component = list(collection = "go", domain = "cellular_component"),
+    kegg_pathway = list(collection = "kegg", domain = "kegg_pathway"),
+    tf_target_gtrd = list(collection = "gtrd", domain = "tf_target_gtrd"),
+    list(collection = "go", domain = "all")
   )
 }
 
@@ -409,7 +423,7 @@ ui <- fluidPage(
           h1("TranscriptoScope"),
           span(class = "version-badge", sprintf("v%s", app_version))
         ),
-        p("Windows-friendly transcriptomics analysis for raw counts, expression matrices, fold-change tables, enrichment, and pathways"),
+        p("Windows-friendly transcriptomics analysis for raw counts, expression matrices, fold-change tables, enrichment, pathways, and WGCNA"),
         p(class = "creator-line", "Created by Dr. Abubakar Abdulkadir | Dr. Rosby's Lab, Southern University A and M")
       ),
       div(
@@ -583,6 +597,21 @@ ui <- fluidPage(
             ),
             div(
               class = "panel",
+              h2("GO DAG Plot"),
+              uiOutput("go_dag_status"),
+              div(
+                class = "download-grid",
+                numericInput("go_dag_top_n", "Top GO terms in DAG", value = 12, min = 1, max = 60, step = 1),
+                numericInput("go_dag_ancestor_depth", "Ancestor levels", value = 3, min = 0, max = 8, step = 1),
+                numericInput("go_dag_padj_cutoff", "DAG FDR cutoff", value = 0.1, min = 0.001, max = 1, step = 0.01),
+                downloadButton("download_go_dag_plot", "GO DAG PNG"),
+                downloadButton("download_go_dag_nodes", "GO DAG Nodes CSV"),
+                downloadButton("download_go_dag_edges", "GO DAG Edges CSV")
+              ),
+              plotOutput("go_dag_plot", height = "720px")
+            ),
+            div(
+              class = "panel",
               h2("Enrichment Results"),
               tableOutput("enrichment_table"),
               div(
@@ -653,6 +682,18 @@ ui <- fluidPage(
               plotOutput("pathway_summary_plot", height = "520px")
             ),
             div(
+              class = "panel",
+              h2("Pathway Cnetplot"),
+              div(
+                class = "download-grid",
+                numericInput("pathway_cnet_top_n", "Top pathways in cnetplot", value = 5, min = 1, max = 20, step = 1),
+                numericInput("pathway_cnet_max_genes", "Max genes per pathway", value = 15, min = 3, max = 100, step = 1),
+                downloadButton("download_pathway_cnetplot", "Pathway Cnetplot PNG"),
+                downloadButton("download_pathway_cnet_edges", "Cnetplot Edges CSV")
+              ),
+              plotOutput("pathway_cnetplot", height = "640px")
+            ),
+            div(
               class = "panel pathway-results-panel",
               h2("Pathway Results"),
               tableOutput("pathway_results_table"),
@@ -678,6 +719,82 @@ ui <- fluidPage(
               h2("Leading-Edge Expression"),
               uiOutput("pathway_heatmap_status"),
               plotOutput("pathway_heatmap", height = "540px")
+            )
+          ),
+          tabPanel(
+            "Network Analysis",
+            div(
+              class = "panel",
+              h2("Weighted Gene Co-Expression Network Analysis"),
+              uiOutput("wgcna_status"),
+              div(
+                class = "download-grid",
+                numericInput("wgcna_max_genes", "Maximum variable genes", value = 5000, min = 10, max = 50000, step = 100),
+                numericInput("wgcna_soft_power", "Soft-threshold power", value = 6, min = 1, max = 30, step = 1),
+                numericInput("wgcna_min_module_size", "Minimum module size", value = 20, min = 2, max = 5000, step = 1)
+              ),
+              div(
+                class = "download-grid",
+                numericInput("wgcna_merge_cut_height", "Module merge cut height", value = 0.25, min = 0, max = 1, step = 0.05),
+                selectInput(
+                  "wgcna_network_type",
+                  "Network type",
+                  choices = c("Signed" = "signed", "Unsigned" = "unsigned"),
+                  selected = "signed",
+                  selectize = FALSE
+                ),
+                selectInput(
+                  "wgcna_correlation",
+                  "Correlation",
+                  choices = c("Pearson" = "pearson", "Biweight midcorrelation" = "bicor"),
+                  selected = "pearson",
+                  selectize = FALSE
+                )
+              ),
+              div(
+                class = "download-grid",
+                selectInput(
+                  "wgcna_expression_scale",
+                  "Normalized-expression scale",
+                  choices = c(
+                    "Use workflow scale" = "auto",
+                    "Linear normalized values" = "linear",
+                    "Already log2-transformed" = "log2"
+                  ),
+                  selected = "auto",
+                  selectize = FALSE
+                )
+              ),
+              actionButton(
+                "run_wgcna",
+                "Run WGCNA",
+                class = "btn-primary run-button"
+              ),
+              tableOutput("wgcna_summary")
+            ),
+            div(
+              class = "panel",
+              h2("Module Sizes"),
+              plotOutput("wgcna_module_plot", height = "420px")
+            ),
+            div(
+              class = "panel",
+              h2("Module-Trait Correlations"),
+              uiOutput("wgcna_trait_status"),
+              plotOutput("wgcna_trait_heatmap", height = "480px"),
+              tableOutput("wgcna_trait_table")
+            ),
+            div(
+              class = "panel",
+              h2("Gene Modules"),
+              tableOutput("wgcna_gene_table"),
+              div(
+                class = "download-grid",
+                downloadButton("download_wgcna_module_summary", "Module Summary CSV"),
+                downloadButton("download_wgcna_gene_modules", "Gene Modules CSV"),
+                downloadButton("download_wgcna_traits", "Module-Trait CSV"),
+                downloadButton("download_wgcna_eigengenes", "Module Eigengenes CSV")
+              )
             )
           ),
           tabPanel(
@@ -735,7 +852,12 @@ server <- function(input, output, session) {
     } else {
       "not installed"
     }
-    sprintf("R %s | DESeq2 %s | fgsea %s", as.character(getRversion()), deseq_version, fgsea_version)
+    wgcna_version <- if (requireNamespace("WGCNA", quietly = TRUE)) {
+      as.character(utils::packageVersion("WGCNA"))
+    } else {
+      "not installed"
+    }
+    sprintf("R %s | DESeq2 %s | fgsea %s | WGCNA %s", as.character(getRversion()), deseq_version, fgsea_version, wgcna_version)
   })
 
   output$metadata_upload <- renderUI({
@@ -1046,7 +1168,7 @@ server <- function(input, output, session) {
 
   output$custom_gene_set_upload <- renderUI({
     if (!identical(input$gene_set_source, "custom")) {
-      return(div(class = "soft-note", "Using the selected built-in GO or optional KEGG source. Custom GMT/CSV upload is optional. KEGG pathway mappings are not bundled; selecting KEGG downloads them from KEGG REST into a local user cache, so internet access and compliance with KEGG terms are required."))
+      return(div(class = "soft-note", "Using the selected built-in GO, TF.Target.GTRD, or optional KEGG source. Custom GMT/CSV upload is optional. KEGG pathway mappings are not bundled; selecting KEGG downloads them from KEGG REST into a local user cache, so internet access and compliance with KEGG terms are required."))
     }
 
     tagList(
@@ -1076,7 +1198,7 @@ server <- function(input, output, session) {
 
     div(
       class = "soft-note",
-      "Rosby's Lab-style ORA uses protein-coding genes as the background, tests upregulated and downregulated genes separately, keeps terms with at least 2 overlaps, applies FDR < 0.01 by default, and displays up to 5 terms per direction. It uses the selected GO, KEGG, or custom gene-set source."
+      "Rosby's Lab-style ORA uses protein-coding genes as the background, tests upregulated and downregulated genes separately, keeps terms with at least 2 overlaps, applies FDR < 0.01 by default, and displays up to 5 terms per direction. It uses the selected GO, TF.Target.GTRD, KEGG, or custom gene-set source."
     )
   })
 
@@ -1233,6 +1355,8 @@ server <- function(input, output, session) {
   analysis_error <- reactiveVal(NULL)
   pathway_result <- reactiveVal(NULL)
   pathway_error <- reactiveVal(NULL)
+  wgcna_result <- reactiveVal(NULL)
+  wgcna_error <- reactiveVal(NULL)
 
   significant_pathway_results <- function(pathway) {
     req(pathway)
@@ -1252,11 +1376,80 @@ server <- function(input, output, session) {
     select_top_pathway_results(pathway$results, top_n = top_n, padj_cutoff = pathway$padj_cutoff)
   }
 
+  go_ontology <- local({
+    cache <- NULL
+    function() {
+      if (is.null(cache)) {
+        cache <<- read_go_ontology(file.path(app_dir, "gene_sets"))
+      }
+      cache
+    }
+  })
+
+  go_dag_top_n <- function() {
+    if (is.null(input$go_dag_top_n) || is.na(input$go_dag_top_n)) {
+      return(15)
+    }
+    input$go_dag_top_n
+  }
+
+  go_dag_ancestor_depth <- function() {
+    if (is.null(input$go_dag_ancestor_depth) || is.na(input$go_dag_ancestor_depth)) {
+      return(4)
+    }
+    input$go_dag_ancestor_depth
+  }
+
+  go_dag_padj_cutoff <- function() {
+    if (is.null(input$go_dag_padj_cutoff) || is.na(input$go_dag_padj_cutoff)) {
+      return(0.1)
+    }
+    input$go_dag_padj_cutoff
+  }
+
+  go_dag_data_for <- function(ora) {
+    req(ora)
+    build_go_dag(
+      ora_table = ora$results,
+      go_ontology = go_ontology(),
+      top_n = go_dag_top_n(),
+      padj_cutoff = go_dag_padj_cutoff(),
+      max_ancestor_depth = go_dag_ancestor_depth()
+    )
+  }
+
+  pathway_cnet_top_n <- function() {
+    if (is.null(input$pathway_cnet_top_n) || is.na(input$pathway_cnet_top_n)) {
+      return(5)
+    }
+    input$pathway_cnet_top_n
+  }
+
+  pathway_cnet_max_genes <- function() {
+    if (is.null(input$pathway_cnet_max_genes) || is.na(input$pathway_cnet_max_genes)) {
+      return(15)
+    }
+    input$pathway_cnet_max_genes
+  }
+
+  pathway_cnet_edges_for <- function(pathway) {
+    req(pathway)
+    pathway_cnetplot_edges(
+      pathway,
+      top_n = pathway_cnet_top_n(),
+      max_genes_per_pathway = pathway_cnet_max_genes(),
+      padj_cutoff = pathway$padj_cutoff,
+      show_ids = isTRUE(input$pathway_show_ids)
+    )
+  }
+
   observeEvent(input$run_analysis, {
     analysis_result(NULL)
     analysis_error(NULL)
     pathway_result(NULL)
     pathway_error(NULL)
+    wgcna_result(NULL)
+    wgcna_error(NULL)
 
     withProgress(message = "Running analysis", value = 0.1, {
       tryCatch(
@@ -1397,7 +1590,8 @@ server <- function(input, output, session) {
 
   gene_sets_for_enrichment <- reactive({
     result <- analysis_result()
-    req(result)
+    result_table <- annotated_results()
+    req(result, result_table)
 
     if (identical(input$gene_set_source, "custom")) {
       req(input$geneset_file)
@@ -1409,23 +1603,16 @@ server <- function(input, output, session) {
         domain = "custom",
         match_mode = "custom",
         matched = NA_integer_,
-        total = nrow(result$results),
+        total = nrow(result_table),
         terms = length(unique(custom_sets$term_id)),
         rows = nrow(custom_sets)
       )
       return(custom_sets)
     }
 
-    collection_choice <- if (is.null(input$go_domain)) "go_all" else input$go_domain
-    collection <- if (identical(collection_choice, "kegg_pathway")) "kegg" else "go"
-    domain <- switch(
-      collection_choice,
-      go_biological_process = "biological_process",
-      go_molecular_function = "molecular_function",
-      go_cellular_component = "cellular_component",
-      kegg_pathway = "kegg_pathway",
-      "all"
-    )
+    collection_info <- gene_set_collection_info(input$go_domain, default = "go_all")
+    collection <- collection_info$collection
+    domain <- collection_info$domain
 
     selected_annotation_key <- input$gene_set_source
     if (is.null(selected_annotation_key) || identical(selected_annotation_key, "auto")) {
@@ -1446,7 +1633,7 @@ server <- function(input, output, session) {
       domain = domain
     )
     prepare_builtin_gene_sets_for_results(
-      result_table = result$results,
+      result_table = result_table,
       built_in_gene_sets = built_in,
       match_mode = if (is.null(input$annotation_match)) "auto" else input$annotation_match
     )
@@ -1501,7 +1688,7 @@ server <- function(input, output, session) {
       return(div(class = "alert-block warning", "Run the DGE analysis first. The enrichment tab uses the current result table automatically."))
     }
     if (identical(input$gene_set_source, "custom") && is.null(input$geneset_file)) {
-      return(div(class = "alert-block warning", "Upload a custom GMT/CSV/TSV gene set file, or choose a built-in GO collection or optional KEGG source."))
+      return(div(class = "alert-block warning", "Upload a custom GMT/CSV/TSV gene set file, or choose a built-in GO, TF.Target.GTRD, or optional KEGG source."))
     }
 
     tryCatch(
@@ -1579,6 +1766,58 @@ server <- function(input, output, session) {
     )
   })
 
+  output$go_dag_status <- renderUI({
+    if (is.null(analysis_result())) {
+      return(div(class = "alert-block warning", "Run the DGE analysis first. The GO DAG uses the current ORA enrichment result."))
+    }
+    ora <- tryCatch(enrichment_result(), error = function(err) err)
+    if (inherits(ora, "error")) {
+      return(div(class = "alert-block warning", conditionMessage(ora)))
+    }
+    go_rows <- ora$results[grepl("^GO:[0-9]{7}$", ora$results$term_id), , drop = FALSE]
+    if (nrow(go_rows) == 0) {
+      return(div(class = "alert-block warning", "The GO DAG plot is available for enrichment results with GO term IDs. Choose a GO collection, or upload custom sets whose term IDs are GO accessions."))
+    }
+    cutoff <- go_dag_padj_cutoff()
+    significant <- sum(!is.na(go_rows$padj) & go_rows$padj < cutoff)
+    if (significant == 0) {
+      return(div(class = "alert-block warning", sprintf("No over-represented GO terms pass DAG FDR < %s.", cutoff)))
+    }
+    ontology_status <- tryCatch(
+      {
+        ontology <- go_ontology()
+        sprintf(
+          " Ontology: %s GO terms and %s relationships loaded.",
+          format(nrow(ontology$terms), big.mark = ","),
+          format(nrow(ontology$edges), big.mark = ",")
+        )
+      },
+      error = function(err) conditionMessage(err)
+    )
+    div(
+      class = "soft-note",
+      sprintf(
+        "DAG ready: %s over-represented GO terms pass FDR < %s; the graph will draw up to %s top terms plus %s ancestor level(s).%s",
+        format(significant, big.mark = ","),
+        cutoff,
+        go_dag_top_n(),
+        go_dag_ancestor_depth(),
+        ontology_status
+      )
+    )
+  })
+
+  output$go_dag_plot <- renderPlot({
+    ora <- enrichment_result()
+    make_go_dag_plot(
+      ora_table = ora$results,
+      go_ontology = go_ontology(),
+      top_n = go_dag_top_n(),
+      padj_cutoff = go_dag_padj_cutoff(),
+      max_ancestor_depth = go_dag_ancestor_depth()
+    )
+  })
+
   output$enrichment_table <- renderTable({
     ora <- enrichment_result()
     if (identical(ora$mode, "rosbys_lab")) {
@@ -1589,19 +1828,12 @@ server <- function(input, output, session) {
   })
 
   pathway_gene_sets <- reactive({
-    result <- analysis_result()
-    req(result)
+    result_table <- annotated_results()
+    req(result_table)
 
-    collection_choice <- if (is.null(input$pathway_collection)) "kegg_pathway" else input$pathway_collection
-    collection <- if (identical(collection_choice, "kegg_pathway")) "kegg" else "go"
-    domain <- switch(
-      collection_choice,
-      go_biological_process = "biological_process",
-      go_molecular_function = "molecular_function",
-      go_cellular_component = "cellular_component",
-      kegg_pathway = "kegg_pathway",
-      "all"
-    )
+    collection_info <- gene_set_collection_info(input$pathway_collection, default = "kegg_pathway")
+    collection <- collection_info$collection
+    domain <- collection_info$domain
 
     selected_annotation_key <- input$pathway_gene_set_source
     if (is.null(selected_annotation_key) || identical(selected_annotation_key, "auto")) {
@@ -1623,7 +1855,7 @@ server <- function(input, output, session) {
       domain = domain
     )
     prepare_builtin_gene_sets_for_results(
-      result_table = result$results,
+      result_table = result_table,
       built_in_gene_sets = built_in,
       match_mode = if (is.null(input$annotation_match)) "auto" else input$annotation_match
     )
@@ -1643,8 +1875,9 @@ server <- function(input, output, session) {
         {
           incProgress(0.25, detail = "Matching ranked genes to pathways")
           gene_sets <- pathway_gene_sets()
+          result_table <- annotated_results()
           pathway <- run_preranked_pathway_analysis(
-            result_table = result$results,
+            result_table = result_table,
             gene_sets = gene_sets,
             rank_metric = if (is.null(input$pathway_rank_metric)) "log2fc" else input$pathway_rank_metric,
             min_set_size = if (is.null(input$pathway_min_set_size)) 3 else input$pathway_min_set_size,
@@ -1726,6 +1959,18 @@ server <- function(input, output, session) {
     )
   })
 
+  output$pathway_cnetplot <- renderPlot({
+    pathway <- pathway_result()
+    req(pathway)
+    make_pathway_cnetplot(
+      pathway,
+      top_n = pathway_cnet_top_n(),
+      max_genes_per_pathway = pathway_cnet_max_genes(),
+      padj_cutoff = pathway$padj_cutoff,
+      show_ids = isTRUE(input$pathway_show_ids)
+    )
+  })
+
   output$pathway_results_table <- renderTable({
     pathway <- pathway_result()
     req(pathway)
@@ -1792,6 +2037,126 @@ server <- function(input, output, session) {
     validate(need(!is.null(result$normalized_counts), "Sample-level expression data are not available for this input mode."))
     leading <- pathway_leading_edge_table(pathway, input$pathway_term)
     make_pathway_heatmap(result, leading$gene_id, max_genes = 40)
+  })
+
+  observeEvent(input$run_wgcna, {
+    wgcna_result(NULL)
+    wgcna_error(NULL)
+    result <- analysis_result()
+    if (is.null(result)) {
+      wgcna_error("Run the DGE analysis before running WGCNA.")
+      return()
+    }
+    if (is.null(result$normalized_counts)) {
+      wgcna_error("WGCNA needs sample-level count or expression data. Fold-change-only inputs cannot be used.")
+      return()
+    }
+    if (!requireNamespace("WGCNA", quietly = TRUE)) {
+      wgcna_error("The WGCNA package is not installed. Run Install_Packages.bat, then restart TranscriptoScope.")
+      return()
+    }
+
+    withProgress(message = "Running WGCNA", value = 0.1, {
+      tryCatch(
+        {
+          incProgress(0.25, detail = "Filtering variable genes")
+          result <- run_wgcna_analysis(
+            workflow_result = result,
+            max_genes = if (is.null(input$wgcna_max_genes)) 5000 else input$wgcna_max_genes,
+            min_module_size = if (is.null(input$wgcna_min_module_size)) 20 else input$wgcna_min_module_size,
+            soft_power = if (is.null(input$wgcna_soft_power)) 6 else input$wgcna_soft_power,
+            merge_cut_height = if (is.null(input$wgcna_merge_cut_height)) 0.25 else input$wgcna_merge_cut_height,
+            network_type = if (is.null(input$wgcna_network_type)) "signed" else input$wgcna_network_type,
+            cor_type = if (is.null(input$wgcna_correlation)) "pearson" else input$wgcna_correlation,
+            expression_scale = if (is.null(input$wgcna_expression_scale)) "auto" else input$wgcna_expression_scale
+          )
+          incProgress(0.65, detail = "Preparing module tables")
+          wgcna_result(result)
+        },
+        error = function(err) {
+          wgcna_error(conditionMessage(err))
+        }
+      )
+    })
+  })
+
+  output$wgcna_status <- renderUI({
+    result <- analysis_result()
+    if (is.null(result)) {
+      return(div(class = "alert-block warning", "Run the DGE analysis first. WGCNA uses the current sample-level matrix."))
+    }
+    if (is.null(result$normalized_counts)) {
+      return(div(class = "alert-block warning", "WGCNA needs sample-level count or expression data. Fold-change-only inputs cannot be used."))
+    }
+    if (!requireNamespace("WGCNA", quietly = TRUE)) {
+      return(div(class = "alert-block error", "The WGCNA package is not installed. Run Install_Packages.bat, then restart TranscriptoScope."))
+    }
+    err <- wgcna_error()
+    if (!is.null(err)) {
+      return(div(class = "alert-block warning", err))
+    }
+    wgcna <- wgcna_result()
+    if (is.null(wgcna)) {
+      return(div(class = "alert-block", sprintf(
+        "Ready for WGCNA: %s genes and %s samples are available.",
+        format(result$genes_tested, big.mark = ","),
+        format(result$samples_tested, big.mark = ",")
+      )))
+    }
+
+    module_count <- sum(wgcna$module_summary$module != "grey")
+    div(
+      class = "alert-block",
+      sprintf(
+        "WGCNA complete: %s genes, %s samples, and %s assigned module(s).",
+        format(wgcna$settings$genes_used, big.mark = ","),
+        format(wgcna$settings$samples_used, big.mark = ","),
+        format(module_count, big.mark = ",")
+      )
+    )
+  })
+
+  output$wgcna_summary <- renderTable({
+    wgcna <- wgcna_result()
+    req(wgcna)
+    format_wgcna_module_summary(wgcna$module_summary, 100)
+  })
+
+  output$wgcna_module_plot <- renderPlot({
+    wgcna <- wgcna_result()
+    req(wgcna)
+    make_wgcna_module_plot(wgcna)
+  })
+
+  output$wgcna_trait_status <- renderUI({
+    wgcna <- wgcna_result()
+    if (is.null(wgcna)) {
+      return(div(class = "soft-note", "Run WGCNA to calculate module-trait correlations."))
+    }
+    if (nrow(wgcna$trait_correlations) == 0) {
+      return(div(class = "alert-block warning", "No usable metadata traits were available for module-trait correlations."))
+    }
+    div(class = "soft-note", "Module eigengenes are correlated with numeric metadata and encoded categorical metadata.")
+  })
+
+  output$wgcna_trait_heatmap <- renderPlot({
+    wgcna <- wgcna_result()
+    req(wgcna)
+    validate(need(nrow(wgcna$trait_correlations) > 0, "No module-trait correlations are available to plot."))
+    make_wgcna_trait_heatmap(wgcna)
+  })
+
+  output$wgcna_trait_table <- renderTable({
+    wgcna <- wgcna_result()
+    req(wgcna)
+    validate(need(nrow(wgcna$trait_correlations) > 0, "No module-trait correlations are available."))
+    format_wgcna_trait_correlations(wgcna$trait_correlations, 100)
+  })
+
+  output$wgcna_gene_table <- renderTable({
+    wgcna <- wgcna_result()
+    req(wgcna)
+    format_wgcna_gene_modules(wgcna$gene_modules, 100)
   })
 
   output$download_controls <- renderUI({
@@ -1869,6 +2234,52 @@ server <- function(input, output, session) {
     }
   )
 
+  output$download_go_dag_plot <- downloadHandler(
+    filename = function() {
+      sprintf("go_dag_plot_%s.png", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      ora <- enrichment_result()
+      req(ora)
+      ggplot2::ggsave(
+        filename = file,
+        plot = make_go_dag_plot(
+          ora_table = ora$results,
+          go_ontology = go_ontology(),
+          top_n = go_dag_top_n(),
+          padj_cutoff = go_dag_padj_cutoff(),
+          max_ancestor_depth = go_dag_ancestor_depth()
+        ),
+        width = 14,
+        height = 8,
+        dpi = 300,
+        bg = "white"
+      )
+    }
+  )
+
+  output$download_go_dag_nodes <- downloadHandler(
+    filename = function() {
+      sprintf("go_dag_nodes_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      ora <- enrichment_result()
+      req(ora)
+      utils::write.csv(go_dag_data_for(ora)$nodes, file, row.names = FALSE)
+    }
+  )
+
+  output$download_go_dag_edges <- downloadHandler(
+    filename = function() {
+      sprintf("go_dag_edges_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      ora <- enrichment_result()
+      req(ora)
+      utils::write.csv(go_dag_data_for(ora)$edges, file, row.names = FALSE)
+    }
+  )
+
   output$download_pathway_results <- downloadHandler(
     filename = function() {
       sprintf("pathway_analysis_%s.csv", format(Sys.Date(), "%Y%m%d"))
@@ -1902,6 +2313,41 @@ server <- function(input, output, session) {
     }
   )
 
+  output$download_pathway_cnetplot <- downloadHandler(
+    filename = function() {
+      sprintf("pathway_cnetplot_%s.png", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      pathway <- pathway_result()
+      req(pathway)
+      ggplot2::ggsave(
+        filename = file,
+        plot = make_pathway_cnetplot(
+          pathway,
+          top_n = pathway_cnet_top_n(),
+          max_genes_per_pathway = pathway_cnet_max_genes(),
+          padj_cutoff = pathway$padj_cutoff,
+          show_ids = isTRUE(input$pathway_show_ids)
+        ),
+        width = 9,
+        height = 7,
+        dpi = 300,
+        bg = "white"
+      )
+    }
+  )
+
+  output$download_pathway_cnet_edges <- downloadHandler(
+    filename = function() {
+      sprintf("pathway_cnetplot_edges_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      pathway <- pathway_result()
+      req(pathway)
+      utils::write.csv(pathway_cnet_edges_for(pathway), file, row.names = FALSE)
+    }
+  )
+
   output$download_pathway_ranks <- downloadHandler(
     filename = function() {
       sprintf("pathway_ranked_genes_%s.csv", format(Sys.Date(), "%Y%m%d"))
@@ -1923,6 +2369,50 @@ server <- function(input, output, session) {
       req(pathway, input$pathway_term)
       req(input$pathway_term %in% pathway$results$term_id)
       utils::write.csv(pathway_leading_edge_table(pathway, input$pathway_term), file, row.names = FALSE)
+    }
+  )
+
+  output$download_wgcna_module_summary <- downloadHandler(
+    filename = function() {
+      sprintf("wgcna_module_summary_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      wgcna <- wgcna_result()
+      req(wgcna)
+      utils::write.csv(wgcna$module_summary, file, row.names = FALSE)
+    }
+  )
+
+  output$download_wgcna_gene_modules <- downloadHandler(
+    filename = function() {
+      sprintf("wgcna_gene_modules_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      wgcna <- wgcna_result()
+      req(wgcna)
+      utils::write.csv(wgcna$gene_modules, file, row.names = FALSE)
+    }
+  )
+
+  output$download_wgcna_traits <- downloadHandler(
+    filename = function() {
+      sprintf("wgcna_module_trait_correlations_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      wgcna <- wgcna_result()
+      req(wgcna)
+      utils::write.csv(wgcna$trait_correlations, file, row.names = FALSE)
+    }
+  )
+
+  output$download_wgcna_eigengenes <- downloadHandler(
+    filename = function() {
+      sprintf("wgcna_module_eigengenes_%s.csv", format(Sys.Date(), "%Y%m%d"))
+    },
+    content = function(file) {
+      wgcna <- wgcna_result()
+      req(wgcna)
+      utils::write.csv(wgcna_module_eigengene_table(wgcna), file, row.names = FALSE)
     }
   )
 
@@ -1996,6 +2486,7 @@ server <- function(input, output, session) {
       ora <- tryCatch(enrichment_result(), error = function(err) NULL)
       selected <- tryCatch(selected_enrichment_genes(), error = function(err) NULL)
       pathway <- pathway_result()
+      wgcna <- wgcna_result()
       enrichment_gene_sets_used <- tryCatch(gene_sets_for_enrichment(), error = function(err) NULL)
       enrichment_gene_set_summary <- if (is.null(enrichment_gene_sets_used)) NULL else attr(enrichment_gene_sets_used, "gene_set_summary")
       pathway_gene_sets_used <- if (is.null(pathway)) NULL else tryCatch(pathway_gene_sets(), error = function(err) NULL)
@@ -2072,6 +2563,14 @@ server <- function(input, output, session) {
             show_pathway_ids = isTRUE(input$pathway_show_ids),
             gene_set_label = if (is.null(pathway_gene_set_summary)) NA_character_ else pathway_gene_set_summary$label
           )
+        },
+        wgcna = if (is.null(wgcna)) {
+          list(status = "not run")
+        } else {
+          c(
+            list(status = "run"),
+            wgcna$settings
+          )
         }
       )
 
@@ -2092,6 +2591,28 @@ server <- function(input, output, session) {
         } else {
           utils::write.csv(ora$results, file.path(bundle_dir, "ora_enrichment.csv"), row.names = FALSE)
         }
+        go_dag <- tryCatch(go_dag_data_for(ora), error = function(err) NULL)
+        if (!is.null(go_dag) && nrow(go_dag$nodes) > 0) {
+          utils::write.csv(go_dag$nodes, file.path(bundle_dir, "go_dag_nodes.csv"), row.names = FALSE)
+          utils::write.csv(go_dag$edges, file.path(bundle_dir, "go_dag_edges.csv"), row.names = FALSE)
+          tryCatch(
+            ggplot2::ggsave(
+              filename = file.path(bundle_dir, "go_dag_plot.png"),
+              plot = make_go_dag_plot(
+                ora_table = ora$results,
+                go_ontology = go_ontology(),
+                top_n = go_dag_top_n(),
+                padj_cutoff = go_dag_padj_cutoff(),
+                max_ancestor_depth = go_dag_ancestor_depth()
+              ),
+              width = 14,
+              height = 8,
+              dpi = 220,
+              bg = "white"
+            ),
+            error = function(err) NULL
+          )
+        }
       }
       if (!is.null(selected) && (is.null(ora) || !identical(ora$mode, "rosbys_lab"))) {
         utils::write.csv(selected$table, file.path(bundle_dir, "ora_selected_genes.csv"), row.names = FALSE)
@@ -2111,9 +2632,36 @@ server <- function(input, output, session) {
         utils::write.csv(significant_pathway_results(pathway), file.path(bundle_dir, "pathway_significant_pathways.csv"), row.names = FALSE)
         utils::write.csv(top_plotted_pathway_results(pathway), file.path(bundle_dir, "pathway_top_plotted_pathways.csv"), row.names = FALSE)
         utils::write.csv(pathway$ranked_table, file.path(bundle_dir, "pathway_ranked_genes.csv"), row.names = FALSE)
+        cnet_edges <- tryCatch(pathway_cnet_edges_for(pathway), error = function(err) NULL)
+        if (!is.null(cnet_edges) && nrow(cnet_edges) > 0) {
+          utils::write.csv(cnet_edges, file.path(bundle_dir, "pathway_cnetplot_edges.csv"), row.names = FALSE)
+          tryCatch(
+            ggplot2::ggsave(
+              filename = file.path(bundle_dir, "pathway_cnetplot.png"),
+              plot = make_pathway_cnetplot(
+                pathway,
+                top_n = pathway_cnet_top_n(),
+                max_genes_per_pathway = pathway_cnet_max_genes(),
+                padj_cutoff = pathway$padj_cutoff,
+                show_ids = isTRUE(input$pathway_show_ids)
+              ),
+              width = 9,
+              height = 7,
+              dpi = 220,
+              bg = "white"
+            ),
+            error = function(err) NULL
+          )
+        }
       }
       if (!is.null(pathway_gene_sets_used)) {
         utils::write.csv(pathway_gene_sets_used, file.path(bundle_dir, "pathway_gene_sets_used.csv"), row.names = FALSE)
+      }
+      if (!is.null(wgcna)) {
+        utils::write.csv(wgcna$module_summary, file.path(bundle_dir, "wgcna_module_summary.csv"), row.names = FALSE)
+        utils::write.csv(wgcna$gene_modules, file.path(bundle_dir, "wgcna_gene_modules.csv"), row.names = FALSE)
+        utils::write.csv(wgcna$trait_correlations, file.path(bundle_dir, "wgcna_module_trait_correlations.csv"), row.names = FALSE)
+        utils::write.csv(wgcna_module_eigengene_table(wgcna), file.path(bundle_dir, "wgcna_module_eigengenes.csv"), row.names = FALSE)
       }
       write_analysis_report(export_result, bundle_dir, effective_lfc_cutoff(), bundle_reproducibility)
 

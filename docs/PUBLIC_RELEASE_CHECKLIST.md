@@ -26,12 +26,12 @@ Use this checklist before publishing TranscriptoScope for free public download.
 
 ## 4. Create The GitHub Release
 
-- Tag: `v0.4.4`
-- Title: `TranscriptoScope Windows v0.4.4`
+- Tag: `v0.4.5`
+- Title: `TranscriptoScope Windows v0.4.5`
 - Upload release asset:
-  - `public_release/release_assets/TranscriptoScope_Windows_v0.4.4.zip`
+  - `public_release/release_assets/TranscriptoScope_Windows_v0.4.5.zip`
 - Paste the release body from:
-  - `public_release/release_assets/GITHUB_RELEASE_BODY_v0.4.4.md`
+  - `public_release/release_assets/GITHUB_RELEASE_BODY_v0.4.5.md`
 - Include the SHA256 checksum.
 
 ## 5. Enable Zenodo DOI

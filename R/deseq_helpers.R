@@ -529,13 +529,18 @@ annotation_match_stats <- function(result_table, annotation) {
 
 gene_set_match_stats <- function(result_table, gene_sets) {
   result_ids <- normalize_gene_ids(result_table$gene_id, case_sensitive = FALSE)
+  result_symbols <- if ("gene_symbol" %in% names(result_table)) {
+    normalize_gene_ids_preserve_length(result_table$gene_symbol, case_sensitive = FALSE)
+  } else {
+    result_ids
+  }
   gene_ids <- normalize_gene_ids(gene_sets$gene_id, case_sensitive = FALSE)
   symbols <- normalize_gene_ids(gene_sets$gene_symbol, case_sensitive = FALSE)
   symbols <- symbols[nzchar(symbols)]
 
   c(
     ensembl = sum(result_ids %in% gene_ids),
-    symbol = sum(result_ids %in% symbols)
+    symbol = sum(result_ids %in% symbols | result_symbols %in% symbols)
   )
 }
 
@@ -543,8 +548,12 @@ prepare_builtin_gene_sets_for_results <- function(result_table, built_in_gene_se
   gene_sets <- built_in_gene_sets$table
   resolved_mode <- match_mode
   if (identical(resolved_mode, "auto")) {
-    stats <- gene_set_match_stats(result_table, gene_sets)
-    resolved_mode <- if (stats[["symbol"]] > stats[["ensembl"]]) "symbol" else "ensembl"
+    if (identical(built_in_gene_sets$domain, "tf_target_gtrd")) {
+      resolved_mode <- "symbol"
+    } else {
+      stats <- gene_set_match_stats(result_table, gene_sets)
+      resolved_mode <- if (stats[["symbol"]] > stats[["ensembl"]]) "symbol" else "ensembl"
+    }
   }
 
   gene_col <- if (identical(resolved_mode, "symbol")) "gene_symbol" else "gene_id"
@@ -560,6 +569,17 @@ prepare_builtin_gene_sets_for_results <- function(result_table, built_in_gene_se
     stringsAsFactors = FALSE
   )
   prepared$gene_id <- trimws(as.character(prepared$gene_id))
+  if (identical(resolved_mode, "symbol") && "gene_symbol" %in% names(result_table)) {
+    result_symbols <- normalize_gene_ids_preserve_length(result_table$gene_symbol, case_sensitive = FALSE)
+    result_ids <- trimws(as.character(result_table$gene_id))
+    keep_result_symbol <- !is.na(result_symbols) & nzchar(result_symbols) &
+      !is.na(result_ids) & nzchar(result_ids) &
+      !duplicated(result_symbols)
+    symbol_to_result_id <- stats::setNames(result_ids[keep_result_symbol], result_symbols[keep_result_symbol])
+    mapped_ids <- unname(symbol_to_result_id[normalize_gene_ids_preserve_length(prepared$gene_id, case_sensitive = FALSE)])
+    mapped_keep <- !is.na(mapped_ids) & mapped_ids != ""
+    prepared$gene_id[mapped_keep] <- mapped_ids[mapped_keep]
+  }
   prepared <- prepared[!is.na(prepared$gene_id) & prepared$gene_id != "", , drop = FALSE]
   prepared <- unique(prepared)
 
@@ -1219,6 +1239,15 @@ normalize_gene_ids <- function(gene_ids, case_sensitive = FALSE) {
   normalized
 }
 
+normalize_gene_ids_preserve_length <- function(gene_ids, case_sensitive = FALSE) {
+  normalized <- trimws(as.character(gene_ids))
+  normalized[is.na(normalized)] <- ""
+  if (!case_sensitive) {
+    normalized <- toupper(normalized)
+  }
+  normalized
+}
+
 select_de_genes <- function(result_table, alpha = 0.05, lfc_cutoff = 1, gene_list = "both") {
   if (!all(c("gene_id", "log2FoldChange") %in% names(result_table))) {
     stop("The result table must contain gene_id and log2FoldChange columns.", call. = FALSE)
@@ -1701,6 +1730,436 @@ make_ora_plot <- function(ora_table, top_n = 20, padj_cutoff = 0.1) {
     )
 }
 
+read_go_ontology <- function(gene_set_dir) {
+  term_file <- file.path(gene_set_dir, "go_ontology_terms.csv")
+  edge_file <- file.path(gene_set_dir, "go_ontology_edges.csv")
+  if (!file.exists(term_file) || !file.exists(edge_file)) {
+    stop("The GO DAG plot needs GO ontology files. Run scripts/download_go_ontology.R, then restart the app.", call. = FALSE)
+  }
+
+  terms <- utils::read.csv(term_file, stringsAsFactors = FALSE, check.names = FALSE)
+  edges <- utils::read.csv(edge_file, stringsAsFactors = FALSE, check.names = FALSE)
+  term_required <- c("term_id", "term_name", "namespace")
+  edge_required <- c("child_id", "parent_id", "relationship")
+  if (!all(term_required %in% names(terms)) || !all(edge_required %in% names(edges))) {
+    stop("The GO ontology files are missing required columns.", call. = FALSE)
+  }
+  terms$term_id <- trimws(as.character(terms$term_id))
+  terms$term_name <- trimws(as.character(terms$term_name))
+  terms$namespace <- trimws(as.character(terms$namespace))
+  terms <- terms[!grepl("^obsolete\\b", terms$term_name, ignore.case = TRUE), , drop = FALSE]
+  edges$child_id <- trimws(as.character(edges$child_id))
+  edges$parent_id <- trimws(as.character(edges$parent_id))
+  edges$relationship <- trimws(as.character(edges$relationship))
+  edges <- edges[edges$child_id %in% terms$term_id & edges$parent_id %in% terms$term_id, , drop = FALSE]
+
+  list(
+    terms = terms[!is.na(terms$term_id) & nzchar(terms$term_id), , drop = FALSE],
+    edges = edges[
+      !is.na(edges$child_id) & nzchar(edges$child_id) &
+        !is.na(edges$parent_id) & nzchar(edges$parent_id),
+      ,
+      drop = FALSE
+    ]
+  )
+}
+
+go_dag_term_label <- function(term_id, term_name, padj = NA_real_, width = 22) {
+  title <- if (is.finite(padj)) {
+    sprintf("%s (%s)", term_id, formatC(padj, format = "e", digits = 1))
+  } else {
+    term_id
+  }
+  if (is.na(term_name) || !nzchar(term_name)) {
+    term_name <- term_id
+  }
+  wrapped <- paste(strwrap(term_name, width = width), collapse = "\n")
+  paste(title, wrapped, sep = "\n")
+}
+
+go_dag_significance_level <- function(padj) {
+  score <- suppressWarnings(-log10(pmax(as.numeric(padj), .Machine$double.xmin)))
+  level <- floor(score)
+  level[!is.finite(level)] <- NA_integer_
+  level <- pmin(9L, pmax(1L, as.integer(level)))
+  paste0("Level", level)
+}
+
+go_dag_layout <- function(nodes, edges) {
+  node_ids <- nodes$term_id
+  parent_list <- split(edges$parent_id, edges$child_id)
+  depths <- stats::setNames(rep(NA_integer_, length(node_ids)), node_ids)
+  roots <- setdiff(node_ids, edges$child_id)
+  if (length(roots) == 0) {
+    roots <- setdiff(node_ids, edges$parent_id)
+  }
+  if (length(roots) == 0) {
+    roots <- node_ids[1]
+  }
+  depths[roots] <- 0L
+
+  for (iteration in seq_len(length(node_ids) + 1L)) {
+    changed <- FALSE
+    for (node_id in node_ids) {
+      parents <- intersect(parent_list[[node_id]], node_ids)
+      if (length(parents) == 0) {
+        candidate <- 0L
+      } else {
+        parent_depths <- depths[parents]
+        if (any(is.na(parent_depths))) {
+          next
+        }
+        candidate <- max(parent_depths) + 1L
+      }
+      if (is.na(depths[[node_id]]) || candidate > depths[[node_id]]) {
+        depths[[node_id]] <- candidate
+        changed <- TRUE
+      }
+    }
+    if (!changed) {
+      break
+    }
+  }
+  depths[is.na(depths)] <- 0L
+  nodes$depth <- as.integer(depths[nodes$term_id])
+
+  arranged <- do.call(rbind, lapply(sort(unique(nodes$depth)), function(depth) {
+    level_nodes <- nodes[nodes$depth == depth, , drop = FALSE]
+    level_nodes <- level_nodes[
+      order(!level_nodes$is_enriched, level_nodes$term_name, level_nodes$term_id),
+      ,
+      drop = FALSE
+    ]
+    n <- nrow(level_nodes)
+    level_nodes$x <- if (n == 1) 0 else (seq_len(n) - (n + 1) / 2) * 1.75
+    level_nodes$y <- -depth * 1.25
+    level_nodes
+  }))
+  rownames(arranged) <- NULL
+  arranged
+}
+
+build_go_dag <- function(
+  ora_table,
+  go_ontology,
+  top_n = 15,
+  padj_cutoff = 0.1,
+  max_ancestor_depth = 4,
+  max_nodes = 90
+) {
+  if (is.null(ora_table) || nrow(ora_table) == 0) {
+    stop("Run GO enrichment before drawing a GO DAG plot.", call. = FALSE)
+  }
+  if (is.null(go_ontology$terms) || is.null(go_ontology$edges)) {
+    stop("A GO ontology term/edge table is required for the DAG plot.", call. = FALSE)
+  }
+  top_n <- suppressWarnings(as.integer(round(top_n)))
+  if (!is.finite(top_n) || top_n < 1) {
+    top_n <- 15L
+  }
+  max_ancestor_depth <- suppressWarnings(as.integer(round(max_ancestor_depth)))
+  if (!is.finite(max_ancestor_depth) || max_ancestor_depth < 0) {
+    max_ancestor_depth <- 4L
+  }
+  max_nodes <- suppressWarnings(as.integer(round(max_nodes)))
+  if (!is.finite(max_nodes) || max_nodes < top_n) {
+    max_nodes <- max(30L, top_n)
+  }
+  if (is.null(padj_cutoff) || length(padj_cutoff) != 1 || is.na(padj_cutoff)) {
+    padj_cutoff <- 0.1
+  }
+
+  go_rows <- ora_table[grepl("^GO:[0-9]{7}$", ora_table$term_id), , drop = FALSE]
+  if (nrow(go_rows) == 0) {
+    stop("The current enrichment result does not contain GO term IDs.", call. = FALSE)
+  }
+  go_rows <- go_rows[go_rows$term_id %in% go_ontology$terms$term_id, , drop = FALSE]
+  if (nrow(go_rows) == 0) {
+    stop("The current GO enrichment results do not match the bundled current GO ontology.", call. = FALSE)
+  }
+  significant <- go_rows[!is.na(go_rows$padj) & go_rows$padj < padj_cutoff, , drop = FALSE]
+  if (nrow(significant) == 0) {
+    stop("No over-represented GO terms pass the DAG FDR cutoff.", call. = FALSE)
+  }
+  selected <- utils::head(
+    significant[order(significant$padj, significant$pvalue, -significant$overlap, na.last = TRUE), , drop = FALSE],
+    top_n
+  )
+  selected_ids <- unique(selected$term_id)
+
+  ontology_edges <- go_ontology$edges
+  all_ids <- selected_ids
+  frontier <- selected_ids
+  for (depth in seq_len(max_ancestor_depth)) {
+    parent_rows <- ontology_edges[ontology_edges$child_id %in% frontier, , drop = FALSE]
+    new_ids <- setdiff(unique(parent_rows$parent_id), all_ids)
+    if (length(new_ids) == 0) {
+      break
+    }
+    all_ids <- c(all_ids, new_ids)
+    frontier <- new_ids
+    if (length(all_ids) >= max_nodes) {
+      break
+    }
+  }
+  if (length(all_ids) > max_nodes) {
+    all_ids <- c(selected_ids, setdiff(all_ids, selected_ids)[seq_len(max_nodes - length(selected_ids))])
+  }
+
+  edges <- ontology_edges[
+    ontology_edges$child_id %in% all_ids &
+      ontology_edges$parent_id %in% all_ids,
+    ,
+    drop = FALSE
+  ]
+  terms <- go_ontology$terms[match(all_ids, go_ontology$terms$term_id), , drop = FALSE]
+  terms <- terms[!is.na(terms$term_id), , drop = FALSE]
+  missing_terms <- setdiff(all_ids, terms$term_id)
+  if (length(missing_terms) > 0) {
+    terms <- rbind(
+      terms,
+      data.frame(term_id = missing_terms, term_name = missing_terms, namespace = "", stringsAsFactors = FALSE)
+    )
+  }
+  selected_lookup <- selected[match(terms$term_id, selected$term_id), , drop = FALSE]
+  nodes <- data.frame(
+    term_id = terms$term_id,
+    term_name = terms$term_name,
+    namespace = terms$namespace,
+    set_size = selected_lookup$set_size,
+    overlap = selected_lookup$overlap,
+    pvalue = selected_lookup$pvalue,
+    padj = selected_lookup$padj,
+    is_enriched = terms$term_id %in% selected_ids,
+    stringsAsFactors = FALSE
+  )
+  nodes$significance <- ifelse(
+    nodes$is_enriched,
+    go_dag_significance_level(nodes$padj),
+    "Not enriched ancestor"
+  )
+  nodes$label <- mapply(
+    go_dag_term_label,
+    nodes$term_id,
+    nodes$term_name,
+    nodes$padj,
+    MoreArgs = list(width = 20),
+    USE.NAMES = FALSE
+  )
+  nodes <- go_dag_layout(nodes, edges)
+
+  if (nrow(edges) > 0) {
+    edge_status <- ifelse(
+      edges$child_id %in% selected_ids & edges$parent_id %in% selected_ids,
+      "two significant nodes",
+      ifelse(
+        edges$child_id %in% selected_ids | edges$parent_id %in% selected_ids,
+        "one significant node",
+        "context edge"
+      )
+    )
+    edges$edge_status <- edge_status
+    parent_nodes <- nodes[match(edges$parent_id, nodes$term_id), c("term_id", "term_name", "x", "y"), drop = FALSE]
+    child_nodes <- nodes[match(edges$child_id, nodes$term_id), c("term_id", "term_name", "x", "y"), drop = FALSE]
+    edges$parent_name <- parent_nodes$term_name
+    edges$child_name <- child_nodes$term_name
+    edges$x <- parent_nodes$x
+    edges$y <- parent_nodes$y - 0.22
+    edges$xend <- child_nodes$x
+    edges$yend <- child_nodes$y + 0.22
+  } else {
+    edges$edge_status <- character(0)
+    edges$parent_name <- character(0)
+    edges$child_name <- character(0)
+    edges$x <- numeric(0)
+    edges$y <- numeric(0)
+    edges$xend <- numeric(0)
+    edges$yend <- numeric(0)
+  }
+
+  list(nodes = nodes, edges = edges, selected_terms = selected)
+}
+
+make_go_dag_plot <- function(
+  ora_table,
+  go_ontology,
+  top_n = 15,
+  padj_cutoff = 0.1,
+  max_ancestor_depth = 4,
+  max_nodes = 90
+) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("ggplot2 is not installed. Run scripts/install_packages.R first.", call. = FALSE)
+  }
+  dag <- build_go_dag(
+    ora_table = ora_table,
+    go_ontology = go_ontology,
+    top_n = top_n,
+    padj_cutoff = padj_cutoff,
+    max_ancestor_depth = max_ancestor_depth,
+    max_nodes = max_nodes
+  )
+  nodes <- dag$nodes
+  edges <- dag$edges
+  node_levels <- c("Not enriched ancestor", paste0("Level", 1:9))
+  nodes$significance <- factor(nodes$significance, levels = node_levels)
+  significance_colors <- c(
+    "Not enriched ancestor" = "#FFFFFF",
+    "Level1" = "#FFFF00",
+    "Level2" = "#FFE000",
+    "Level3" = "#FFC000",
+    "Level4" = "#FFA000",
+    "Level5" = "#FF8400",
+    "Level6" = "#FF6800",
+    "Level7" = "#FF4A00",
+    "Level8" = "#FF2600",
+    "Level9" = "#FF0000"
+  )
+  relationship_colors <- c(
+    is_a = "#111827",
+    part_of = "#F59E0B",
+    positive_regulate = "#EF4444",
+    regulate = "#7C3AED",
+    negative_regulate = "#22C55E"
+  )
+  relationship_labels <- c(
+    is_a = "is_a",
+    part_of = "part_of",
+    positive_regulate = "positive_regulate",
+    regulate = "regulate",
+    negative_regulate = "negative_regulate"
+  )
+  edge_linetypes <- c(
+    "two significant nodes" = "longdash",
+    "one significant node" = "dotted",
+    "context edge" = "solid"
+  )
+  node_x_range <- range(nodes$x, na.rm = TRUE)
+  node_y_range <- range(nodes$y, na.rm = TRUE)
+  node_x_span <- max(1, diff(node_x_range))
+  node_y_span <- max(1, diff(node_y_range))
+  key_bar_width <- max(0.35, min(0.8, node_x_span * 0.04))
+  key_bar_height <- max(0.14, min(0.28, node_y_span / 18))
+  key_x <- node_x_range[2] + node_x_span * 0.06 + 0.4
+  key_top_y <- node_y_range[2] - node_y_span * 0.02
+  significance_key <- data.frame(
+    significance = factor(paste0("Level", 9:1), levels = node_levels),
+    level_label = paste0("Level", 9:1),
+    xmin = key_x,
+    xmax = key_x + key_bar_width,
+    ymax = key_top_y - (seq_len(9) - 1) * key_bar_height,
+    ymin = key_top_y - seq_len(9) * key_bar_height,
+    stringsAsFactors = FALSE
+  )
+  significance_key$ymid <- (significance_key$ymin + significance_key$ymax) / 2
+  significance_title <- data.frame(
+    x = key_x,
+    y = key_top_y + key_bar_height * 0.9,
+    label = "Significance levels",
+    stringsAsFactors = FALSE
+  )
+
+  plot <- ggplot2::ggplot() +
+    ggplot2::scale_fill_manual(
+      values = significance_colors,
+      breaks = node_levels,
+      drop = FALSE,
+      guide = "none"
+    ) +
+    ggplot2::scale_color_manual(
+      values = relationship_colors,
+      labels = relationship_labels,
+      breaks = names(relationship_colors),
+      drop = FALSE,
+      name = "GO relation"
+    ) +
+    ggplot2::scale_linetype_manual(
+      values = edge_linetypes,
+      breaks = names(edge_linetypes),
+      drop = FALSE,
+      name = "Arrow type"
+    )
+
+  if (nrow(edges) > 0) {
+    plot <- plot +
+      ggplot2::geom_segment(
+        data = edges,
+        ggplot2::aes(x = x, y = y, xend = xend, yend = yend, color = relationship, linetype = edge_status),
+        linewidth = 0.55,
+        arrow = grid::arrow(type = "closed", length = grid::unit(0.08, "inches")),
+        lineend = "round"
+      )
+  }
+
+  plot +
+    ggplot2::geom_label(
+      data = nodes,
+      ggplot2::aes(x = x, y = y, label = label, fill = significance),
+      color = "#111827",
+      size = 2.45,
+      lineheight = 0.92,
+      linewidth = 0.25,
+      label.padding = grid::unit(0.12, "lines"),
+      label.r = grid::unit(0, "lines")
+    ) +
+    ggplot2::geom_text(
+      data = significance_title,
+      ggplot2::aes(x = x, y = y, label = label),
+      inherit.aes = FALSE,
+      hjust = 0,
+      size = 3.2,
+      fontface = "bold",
+      color = "#111827"
+    ) +
+    ggplot2::geom_rect(
+      data = significance_key,
+      ggplot2::aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax, fill = significance),
+      inherit.aes = FALSE,
+      color = NA
+    ) +
+    ggplot2::geom_rect(
+      data = significance_key[1, , drop = FALSE],
+      ggplot2::aes(
+        xmin = xmin,
+        xmax = xmax,
+        ymin = min(significance_key$ymin),
+        ymax = max(significance_key$ymax)
+      ),
+      inherit.aes = FALSE,
+      fill = NA,
+      color = "#111827",
+      linewidth = 0.25
+    ) +
+    ggplot2::geom_segment(
+      data = significance_key,
+      ggplot2::aes(x = xmin, xend = xmax + key_bar_width * 0.12, y = ymid, yend = ymid),
+      inherit.aes = FALSE,
+      color = "#111827",
+      linewidth = 0.18
+    ) +
+    ggplot2::geom_text(
+      data = significance_key,
+      ggplot2::aes(x = xmax + key_bar_width * 0.18, y = ymid, label = level_label),
+      inherit.aes = FALSE,
+      hjust = 0,
+      size = 2.8,
+      color = "#111827"
+    ) +
+    ggplot2::coord_cartesian(clip = "off") +
+    ggplot2::guides(
+      color = ggplot2::guide_legend(order = 1, override.aes = list(linewidth = 1.2)),
+      linetype = ggplot2::guide_legend(order = 2, override.aes = list(color = "#111827", linewidth = 1.2))
+    ) +
+    ggplot2::labs(x = NULL, y = NULL) +
+    ggplot2::theme_void(base_size = 11) +
+    ggplot2::theme(
+      legend.position = "right",
+      legend.title = ggplot2::element_text(size = 10),
+      legend.text = ggplot2::element_text(size = 8.5),
+      plot.margin = ggplot2::margin(20, 35, 20, 35)
+    )
+}
+
 prepare_pathway_ranks <- function(
   result_table,
   rank_metric = "log2fc",
@@ -1725,6 +2184,12 @@ prepare_pathway_ranks <- function(
     normalized_ids <- toupper(normalized_ids)
   }
   log2fc <- suppressWarnings(as.numeric(result_table$log2FoldChange))
+  gene_symbols <- if ("gene_symbol" %in% names(result_table)) {
+    trimws(as.character(result_table$gene_symbol))
+  } else {
+    rep("", nrow(result_table))
+  }
+  gene_symbols[is.na(gene_symbols)] <- ""
   pvalue <- if ("pvalue" %in% names(result_table)) {
     suppressWarnings(as.numeric(result_table$pvalue))
   } else {
@@ -1760,6 +2225,7 @@ prepare_pathway_ranks <- function(
     normalized_gene_id = normalized_ids[keep],
     rank_score = rank_score[keep],
     log2FoldChange = log2fc[keep],
+    gene_symbol = gene_symbols[keep],
     pvalue = pvalue[keep],
     padj = padj[keep],
     stringsAsFactors = FALSE
@@ -2068,6 +2534,284 @@ make_pathway_enrichment_plot <- function(pathway_result, term_id) {
     ggplot2::theme_minimal(base_size = 12)
 }
 
+pathway_cnetplot_edges <- function(
+  pathway_result,
+  top_n = 5,
+  max_genes_per_pathway = 15,
+  padj_cutoff = 0.05,
+  show_ids = FALSE
+) {
+  if (is.null(pathway_result) || is.null(pathway_result$results) || is.null(pathway_result$ranked_table)) {
+    stop("Run pathway analysis before drawing a cnetplot.", call. = FALSE)
+  }
+
+  top_n <- suppressWarnings(as.integer(round(top_n)))
+  if (!is.finite(top_n) || top_n < 1) {
+    top_n <- 5
+  }
+  max_genes_per_pathway <- suppressWarnings(as.integer(round(max_genes_per_pathway)))
+  if (!is.finite(max_genes_per_pathway) || max_genes_per_pathway < 1) {
+    max_genes_per_pathway <- 15
+  }
+  if (is.null(padj_cutoff) || length(padj_cutoff) != 1 || is.na(padj_cutoff)) {
+    padj_cutoff <- 0.05
+  }
+
+  top_terms <- select_top_pathway_results(
+    pathway_result$results,
+    top_n = top_n,
+    padj_cutoff = padj_cutoff
+  )
+  if (nrow(top_terms) == 0) {
+    stop("No pathway results are available for the cnetplot.", call. = FALSE)
+  }
+  top_terms <- top_terms[
+    !is.na(top_terms$leading_edge_genes) & nzchar(top_terms$leading_edge_genes),
+    ,
+    drop = FALSE
+  ]
+  if (nrow(top_terms) == 0) {
+    stop("The selected pathways do not include leading-edge genes to connect.", call. = FALSE)
+  }
+
+  ranked <- pathway_result$ranked_table
+  ranked$gene_id <- trimws(as.character(ranked$gene_id))
+  rows <- lapply(seq_len(nrow(top_terms)), function(row_index) {
+    term <- top_terms[row_index, , drop = FALSE]
+    genes <- strsplit(as.character(term$leading_edge_genes[1]), ";", fixed = TRUE)[[1]]
+    genes <- unique(trimws(genes))
+    genes <- genes[!is.na(genes) & nzchar(genes)]
+    if (length(genes) == 0) {
+      return(NULL)
+    }
+
+    matched <- match(genes, ranked$gene_id)
+    gene_table <- ranked[matched[!is.na(matched)], , drop = FALSE]
+    if (nrow(gene_table) == 0) {
+      return(NULL)
+    }
+    gene_table <- gene_table[
+      order(abs(gene_table$rank_score), decreasing = TRUE, na.last = TRUE),
+      ,
+      drop = FALSE
+    ]
+    gene_table <- utils::head(gene_table, max_genes_per_pathway)
+    gene_symbol <- if ("gene_symbol" %in% names(gene_table)) {
+      trimws(as.character(gene_table$gene_symbol))
+    } else {
+      rep("", nrow(gene_table))
+    }
+    gene_symbol[is.na(gene_symbol)] <- ""
+    gene_label <- ifelse(nzchar(gene_symbol), gene_symbol, gene_table$gene_id)
+    term_label <- if (isTRUE(show_ids)) {
+      paste0(term$term_name[1], " [", term$term_id[1], "]")
+    } else {
+      term$term_name[1]
+    }
+
+    data.frame(
+      term_id = term$term_id[1],
+      term_name = term$term_name[1],
+      pathway_label = term_label,
+      direction = term$direction[1],
+      NES = term$NES[1],
+      pathway_pvalue = term$pvalue[1],
+      pathway_padj = term$padj[1],
+      set_size = term$set_size[1],
+      leading_edge_count = term$leading_edge_count[1],
+      gene_id = gene_table$gene_id,
+      gene_symbol = gene_symbol,
+      gene_label = gene_label,
+      rank_score = gene_table$rank_score,
+      log2FoldChange = gene_table$log2FoldChange,
+      gene_pvalue = gene_table$pvalue,
+      gene_padj = gene_table$padj,
+      stringsAsFactors = FALSE
+    )
+  })
+
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0) {
+    stop("No leading-edge genes matched the ranked gene table for the cnetplot.", call. = FALSE)
+  }
+  edges <- do.call(rbind, rows)
+  rownames(edges) <- NULL
+  edges
+}
+
+make_pathway_cnetplot <- function(
+  pathway_result,
+  top_n = 5,
+  max_genes_per_pathway = 15,
+  padj_cutoff = 0.05,
+  show_ids = FALSE
+) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("ggplot2 is not installed. Run scripts/install_packages.R first.", call. = FALSE)
+  }
+
+  edges <- pathway_cnetplot_edges(
+    pathway_result,
+    top_n = top_n,
+    max_genes_per_pathway = max_genes_per_pathway,
+    padj_cutoff = padj_cutoff,
+    show_ids = show_ids
+  )
+  term_levels <- unique(edges$pathway_label)
+  term_nodes <- edges[
+    !duplicated(edges$pathway_label),
+    c("term_id", "term_name", "pathway_label", "direction", "NES", "pathway_padj", "set_size", "leading_edge_count"),
+    drop = FALSE
+  ]
+  term_nodes$displayed_genes <- vapply(
+    term_nodes$pathway_label,
+    function(label) length(unique(edges$gene_id[edges$pathway_label == label])),
+    integer(1)
+  )
+  n_terms <- nrow(term_nodes)
+  term_radius <- if (n_terms == 1) 0 else min(0.42, 0.18 + 0.04 * n_terms)
+  term_angles <- if (n_terms == 1) {
+    pi / 2
+  } else {
+    seq(pi / 2, pi / 2 + 2 * pi * (n_terms - 1) / n_terms, length.out = n_terms)
+  }
+  term_nodes$x <- term_radius * cos(term_angles)
+  term_nodes$y <- term_radius * sin(term_angles)
+
+  gene_nodes <- edges[
+    !duplicated(edges$gene_id),
+    c("gene_id", "gene_symbol", "gene_label", "rank_score", "log2FoldChange", "gene_pvalue", "gene_padj"),
+    drop = FALSE
+  ]
+  gene_nodes$pathway_count <- as.integer(table(edges$gene_id)[gene_nodes$gene_id])
+  n_genes <- nrow(gene_nodes)
+  gene_angles <- if (n_genes == 1) {
+    pi / 2
+  } else {
+    seq(pi / 2, pi / 2 - 2 * pi * (n_genes - 1) / n_genes, length.out = n_genes)
+  }
+  gene_nodes$x <- cos(gene_angles)
+  gene_nodes$y <- sin(gene_angles)
+  gene_nodes$label <- ifelse(
+    nchar(gene_nodes$gene_label) > 28,
+    paste0(substr(gene_nodes$gene_label, 1, 25), "..."),
+    gene_nodes$gene_label
+  )
+  gene_nodes$label_hjust <- ifelse(gene_nodes$x >= 0, -0.15, 1.15)
+  gene_nodes$label_vjust <- ifelse(
+    abs(gene_nodes$x) < 0.12 & gene_nodes$y > 0,
+    -0.15,
+    ifelse(abs(gene_nodes$x) < 0.12 & gene_nodes$y < 0, 1.15, 0.5)
+  )
+
+  term_nodes$label <- ifelse(
+    nchar(term_nodes$pathway_label) > 48,
+    paste0(substr(term_nodes$pathway_label, 1, 45), "..."),
+    term_nodes$pathway_label
+  )
+  term_nodes$label_y <- term_nodes$y + ifelse(term_nodes$y >= 0, 0.13, -0.13)
+
+  edge_plot <- merge(
+    edges,
+    term_nodes[c("pathway_label", "x", "y")],
+    by = "pathway_label",
+    all.x = TRUE,
+    sort = FALSE
+  )
+  names(edge_plot)[names(edge_plot) == "x"] <- "term_x"
+  names(edge_plot)[names(edge_plot) == "y"] <- "term_y"
+  edge_plot <- merge(
+    edge_plot,
+    gene_nodes[c("gene_id", "x", "y")],
+    by = "gene_id",
+    all.x = TRUE,
+    sort = FALSE
+  )
+  names(edge_plot)[names(edge_plot) == "x"] <- "gene_x"
+  names(edge_plot)[names(edge_plot) == "y"] <- "gene_y"
+  edge_plot$pathway_label <- factor(edge_plot$pathway_label, levels = term_levels)
+
+  term_nodes$pathway_label <- factor(term_nodes$pathway_label, levels = term_levels)
+  palette <- stats::setNames(grDevices::hcl.colors(length(term_levels), "Dark 3"), term_levels)
+  fc_limit <- suppressWarnings(max(abs(gene_nodes$log2FoldChange), na.rm = TRUE))
+  if (!is.finite(fc_limit) || fc_limit == 0) {
+    fc_limit <- 1
+  }
+  size_breaks <- sort(unique(term_nodes$displayed_genes))
+  if (length(size_breaks) > 5) {
+    size_breaks <- sort(unique(round(pretty(size_breaks, n = 4))))
+  }
+
+  ggplot2::ggplot() +
+    ggplot2::geom_curve(
+      data = edge_plot,
+      ggplot2::aes(x = term_x, y = term_y, xend = gene_x, yend = gene_y, color = pathway_label),
+      curvature = 0.22,
+      linewidth = 0.7,
+      alpha = 0.82,
+      lineend = "round"
+    ) +
+    ggplot2::geom_point(
+      data = gene_nodes,
+      ggplot2::aes(x = x, y = y, fill = log2FoldChange),
+      shape = 21,
+      size = 3.6,
+      color = "#FFFFFF",
+      stroke = 0.45
+    ) +
+    ggplot2::geom_point(
+      data = term_nodes,
+      ggplot2::aes(x = x, y = y, size = displayed_genes),
+      shape = 21,
+      fill = "#E7C78B",
+      color = "#FFFFFF",
+      stroke = 0.8
+    ) +
+    ggplot2::geom_text(
+      data = gene_nodes,
+      ggplot2::aes(x = x, y = y, label = label, hjust = label_hjust, vjust = label_vjust),
+      size = 3.2,
+      color = "#111827",
+      check_overlap = TRUE
+    ) +
+    ggplot2::geom_text(
+      data = term_nodes,
+      ggplot2::aes(x = x, y = label_y, label = label),
+      size = 3.4,
+      color = "#111827",
+      fontface = "bold",
+      check_overlap = TRUE
+    ) +
+    ggplot2::scale_color_manual(values = palette, name = "category") +
+    ggplot2::scale_fill_gradient2(
+      low = "#1D4ED8",
+      mid = "#F8FAFC",
+      high = "#E11D48",
+      midpoint = 0,
+      limits = c(-fc_limit, fc_limit),
+      name = "log2 fc",
+      na.value = "#94A3B8"
+    ) +
+    ggplot2::scale_size_continuous(
+      range = c(5.5, 11),
+      name = "size",
+      breaks = size_breaks
+    ) +
+    ggplot2::coord_equal(xlim = c(-1.28, 1.28), ylim = c(-1.24, 1.24), clip = "off") +
+    ggplot2::guides(
+      color = ggplot2::guide_legend(override.aes = list(linewidth = 1.3, alpha = 1)),
+      fill = ggplot2::guide_colorbar(order = 1),
+      size = ggplot2::guide_legend(order = 2)
+    ) +
+    ggplot2::theme_void(base_size = 12) +
+    ggplot2::theme(
+      legend.position = "right",
+      legend.title = ggplot2::element_text(size = 11),
+      legend.text = ggplot2::element_text(size = 9),
+      plot.margin = ggplot2::margin(20, 45, 20, 45)
+    )
+}
+
 pathway_leading_edge_table <- function(pathway_result, term_id) {
   row <- pathway_result$results[pathway_result$results$term_id == term_id, , drop = FALSE]
   if (nrow(row) == 0 || !nzchar(row$leading_edge_genes[1])) {
@@ -2128,6 +2872,420 @@ make_pathway_heatmap <- function(workflow_result, gene_ids, max_genes = 40) {
     ) +
     ggplot2::labs(x = NULL, y = NULL, fill = "Row z-score") +
     ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      panel.grid = ggplot2::element_blank(),
+      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+      legend.position = "bottom"
+    )
+}
+
+wgcna_expression_matrix <- function(workflow_result, expression_scale = "auto", pseudocount = 1) {
+  expression_table <- workflow_result$normalized_counts
+  if (is.null(expression_table) || !"gene_id" %in% names(expression_table)) {
+    stop("WGCNA needs sample-level count or expression data. Fold-change-only inputs cannot be used.", call. = FALSE)
+  }
+
+  sample_columns <- setdiff(names(expression_table), "gene_id")
+  if (length(sample_columns) < 4) {
+    stop("WGCNA needs at least four samples.", call. = FALSE)
+  }
+  if (pseudocount <= 0) {
+    stop("The WGCNA log transform pseudocount must be greater than zero.", call. = FALSE)
+  }
+
+  values <- as.matrix(expression_table[, sample_columns, drop = FALSE])
+  storage.mode(values) <- "double"
+  if (anyNA(values) || any(!is.finite(values))) {
+    stop("The expression matrix contains missing or non-finite values that cannot be used for WGCNA.", call. = FALSE)
+  }
+  rownames(values) <- trimws(as.character(expression_table$gene_id))
+
+  if (identical(workflow_result$input_type, "counts")) {
+    if (any(values < 0)) {
+      stop("Normalized count values for WGCNA cannot be negative.", call. = FALSE)
+    }
+    values <- log2(values + pseudocount)
+    scale_used <- sprintf("log2(normalized count + %s)", pseudocount)
+  } else if (identical(workflow_result$input_type, "normalized")) {
+    resolved_scale <- if (identical(expression_scale, "auto") && !is.null(workflow_result$expression_scale)) {
+      workflow_result$expression_scale
+    } else {
+      resolve_expression_scale(values, expression_scale)
+    }
+    if (identical(resolved_scale, "linear")) {
+      if (any(values + pseudocount <= 0)) {
+        stop("Linear normalized expression values must be greater than the negative pseudocount before log transform.", call. = FALSE)
+      }
+      values <- log2(values + pseudocount)
+      scale_used <- sprintf("log2(linear expression + %s)", pseudocount)
+    } else {
+      scale_used <- "log2 expression"
+    }
+  } else {
+    stop("WGCNA is available only for raw-count or normalized-expression workflows.", call. = FALSE)
+  }
+
+  attr(values, "expression_scale_used") <- scale_used
+  values
+}
+
+make_wgcna_trait_matrix <- function(metadata) {
+  if (is.null(metadata) || nrow(metadata) < 3) {
+    return(NULL)
+  }
+
+  metadata <- as.data.frame(metadata, stringsAsFactors = FALSE, check.names = FALSE)
+  sample_ids <- rownames(metadata)
+  if (is.null(sample_ids) || any(is.na(sample_ids) | !nzchar(sample_ids))) {
+    return(NULL)
+  }
+  metadata$sample_id <- NULL
+
+  trait_list <- list()
+  for (column_name in names(metadata)) {
+    values <- metadata[[column_name]]
+    if (is.numeric(values) || is.integer(values)) {
+      numeric_values <- as.numeric(values)
+      if (sum(is.finite(numeric_values)) >= 3 && stats::sd(numeric_values, na.rm = TRUE) > 0) {
+        trait_list[[column_name]] <- numeric_values
+      }
+      next
+    }
+
+    labels <- trimws(as.character(values))
+    labels[is.na(labels) | !nzchar(labels)] <- NA_character_
+    levels <- sort(unique(labels[!is.na(labels)]))
+    if (length(levels) < 2) {
+      next
+    }
+
+    encoded_levels <- if (length(levels) == 2) levels[2] else levels
+    for (level in encoded_levels) {
+      trait_name <- paste(column_name, level, sep = ":")
+      numeric_values <- as.numeric(labels == level)
+      numeric_values[is.na(labels)] <- NA_real_
+      if (stats::sd(numeric_values, na.rm = TRUE) > 0) {
+        trait_list[[trait_name]] <- numeric_values
+      }
+    }
+  }
+
+  if (length(trait_list) == 0) {
+    return(NULL)
+  }
+
+  trait_frame <- as.data.frame(trait_list, stringsAsFactors = FALSE, check.names = FALSE)
+  rownames(trait_frame) <- sample_ids
+  trait_matrix <- as.matrix(trait_frame)
+  storage.mode(trait_matrix) <- "double"
+  trait_matrix
+}
+
+wgcna_correlation_pvalue <- function(x, y) {
+  keep <- is.finite(x) & is.finite(y)
+  if (sum(keep) < 3) {
+    return(NA_real_)
+  }
+  x <- x[keep]
+  y <- y[keep]
+  if (stats::sd(x) == 0 || stats::sd(y) == 0) {
+    return(NA_real_)
+  }
+  tryCatch(
+    stats::cor.test(x, y)$p.value,
+    error = function(err) NA_real_
+  )
+}
+
+make_wgcna_trait_correlations <- function(module_eigengenes, metadata) {
+  empty <- data.frame(
+    module = character(),
+    trait = character(),
+    correlation = numeric(),
+    pvalue = numeric(),
+    padj = numeric(),
+    stringsAsFactors = FALSE
+  )
+  if (is.null(module_eigengenes) || ncol(module_eigengenes) == 0) {
+    return(empty)
+  }
+
+  traits <- make_wgcna_trait_matrix(metadata)
+  if (is.null(traits) || ncol(traits) == 0) {
+    return(empty)
+  }
+
+  shared_samples <- intersect(rownames(module_eigengenes), rownames(traits))
+  if (length(shared_samples) < 3) {
+    return(empty)
+  }
+
+  eigengenes <- as.matrix(module_eigengenes[shared_samples, , drop = FALSE])
+  traits <- traits[shared_samples, , drop = FALSE]
+  correlations <- stats::cor(eigengenes, traits, use = "pairwise.complete.obs")
+  grid <- expand.grid(
+    eigengene = colnames(eigengenes),
+    trait = colnames(traits),
+    KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE
+  )
+  grid$module <- sub("^ME", "", grid$eigengene)
+  grid$correlation <- mapply(
+    function(eigengene, trait) correlations[eigengene, trait],
+    grid$eigengene,
+    grid$trait,
+    SIMPLIFY = TRUE,
+    USE.NAMES = FALSE
+  )
+  grid$pvalue <- mapply(
+    function(eigengene, trait) wgcna_correlation_pvalue(eigengenes[, eigengene], traits[, trait]),
+    grid$eigengene,
+    grid$trait,
+    SIMPLIFY = TRUE,
+    USE.NAMES = FALSE
+  )
+  grid$padj <- stats::p.adjust(grid$pvalue, method = "BH")
+  grid <- grid[c("module", "trait", "correlation", "pvalue", "padj")]
+  grid <- grid[order(grid$padj, -abs(grid$correlation), na.last = TRUE), , drop = FALSE]
+  rownames(grid) <- NULL
+  grid
+}
+
+run_wgcna_analysis <- function(
+  workflow_result,
+  max_genes = 5000,
+  min_module_size = 20,
+  soft_power = 6,
+  merge_cut_height = 0.25,
+  network_type = "signed",
+  cor_type = "pearson",
+  expression_scale = "auto",
+  pseudocount = 1
+) {
+  if (!requireNamespace("WGCNA", quietly = TRUE)) {
+    stop("The WGCNA package is required for weighted gene co-expression network analysis. Run scripts/install_packages.R, then restart the app.", call. = FALSE)
+  }
+  suppressPackageStartupMessages(require("WGCNA", quietly = TRUE, character.only = TRUE))
+
+  expression_matrix <- wgcna_expression_matrix(workflow_result, expression_scale = expression_scale, pseudocount = pseudocount)
+  expression_scale_used <- attr(expression_matrix, "expression_scale_used")
+  warnings <- character()
+
+  row_variance <- apply(expression_matrix, 1, stats::var, na.rm = TRUE)
+  keep_variable <- is.finite(row_variance) & row_variance > 0
+  if (!all(keep_variable)) {
+    warnings <- c(warnings, sprintf("Dropped %s genes with zero or non-finite variance before WGCNA.", sum(!keep_variable)))
+  }
+  expression_matrix <- expression_matrix[keep_variable, , drop = FALSE]
+  row_variance <- row_variance[keep_variable]
+  if (nrow(expression_matrix) < 10) {
+    stop("WGCNA needs at least 10 variable genes after filtering.", call. = FALSE)
+  }
+
+  max_genes <- as.integer(max(10, max_genes))
+  if (nrow(expression_matrix) > max_genes) {
+    top_index <- order(row_variance, decreasing = TRUE)[seq_len(max_genes)]
+    expression_matrix <- expression_matrix[top_index, , drop = FALSE]
+    row_variance <- row_variance[top_index]
+    warnings <- c(warnings, sprintf("Selected the top %s variable genes for WGCNA.", max_genes))
+  }
+
+  dat_expr <- as.data.frame(t(expression_matrix), check.names = FALSE)
+  good_samples_genes <- WGCNA::goodSamplesGenes(dat_expr, verbose = 0)
+  if (!isTRUE(good_samples_genes$allOK)) {
+    dat_expr <- dat_expr[good_samples_genes$goodSamples, good_samples_genes$goodGenes, drop = FALSE]
+    warnings <- c(warnings, "Removed WGCNA-flagged samples or genes with problematic values.")
+  }
+  if (nrow(dat_expr) < 4) {
+    stop("WGCNA needs at least four usable samples after quality checks.", call. = FALSE)
+  }
+  if (ncol(dat_expr) < 10) {
+    stop("WGCNA needs at least 10 usable genes after quality checks.", call. = FALSE)
+  }
+
+  network_type <- if (network_type %in% c("signed", "unsigned")) network_type else "signed"
+  cor_type <- if (cor_type %in% c("pearson", "bicor")) cor_type else "pearson"
+  soft_power <- as.numeric(soft_power)
+  if (!is.finite(soft_power) || soft_power < 1) {
+    soft_power <- 6
+  }
+  min_module_size <- as.integer(min_module_size)
+  if (!is.finite(min_module_size) || min_module_size < 2) {
+    min_module_size <- 20
+  }
+  min_module_size <- max(2L, min(min_module_size, ncol(dat_expr)))
+  merge_cut_height <- as.numeric(merge_cut_height)
+  if (!is.finite(merge_cut_height) || merge_cut_height < 0 || merge_cut_height > 1) {
+    merge_cut_height <- 0.25
+  }
+
+  modules <- suppressWarnings(WGCNA::blockwiseModules(
+    dat_expr,
+    power = soft_power,
+    maxBlockSize = ncol(dat_expr),
+    networkType = network_type,
+    TOMType = network_type,
+    corType = cor_type,
+    minModuleSize = min_module_size,
+    reassignThreshold = 0,
+    mergeCutHeight = merge_cut_height,
+    numericLabels = FALSE,
+    pamRespectsDendro = FALSE,
+    saveTOMs = FALSE,
+    randomSeed = 12345,
+    verbose = 0
+  ))
+
+  module_colors <- as.character(modules$colors)
+  names(module_colors) <- colnames(dat_expr)
+  module_eigengenes <- modules$MEs
+  if (is.null(module_eigengenes) || ncol(module_eigengenes) == 0) {
+    module_eigengenes <- tryCatch(
+      WGCNA::moduleEigengenes(dat_expr, colors = module_colors)$eigengenes,
+      error = function(err) data.frame(row.names = rownames(dat_expr))
+    )
+  }
+  module_eigengenes <- as.data.frame(module_eigengenes, stringsAsFactors = FALSE, check.names = FALSE)
+  if (ncol(module_eigengenes) > 0) {
+    module_eigengenes <- WGCNA::orderMEs(module_eigengenes)
+  }
+
+  gene_modules <- data.frame(
+    gene_id = names(module_colors),
+    module = unname(module_colors),
+    variance = as.numeric(row_variance[names(module_colors)]),
+    stringsAsFactors = FALSE
+  )
+  gene_modules <- gene_modules[order(gene_modules$module == "grey", gene_modules$module, -gene_modules$variance), , drop = FALSE]
+  rownames(gene_modules) <- NULL
+
+  module_counts <- sort(table(gene_modules$module), decreasing = TRUE)
+  module_summary <- data.frame(
+    module = names(module_counts),
+    gene_count = as.integer(module_counts),
+    eigengene = paste0("ME", names(module_counts)),
+    mean_gene_variance = as.numeric(tapply(gene_modules$variance, gene_modules$module, mean, na.rm = TRUE)[names(module_counts)]),
+    stringsAsFactors = FALSE
+  )
+  module_summary <- module_summary[order(module_summary$module == "grey", -module_summary$gene_count, module_summary$module), , drop = FALSE]
+  rownames(module_summary) <- NULL
+
+  trait_correlations <- make_wgcna_trait_correlations(module_eigengenes, workflow_result$analysis_metadata)
+
+  list(
+    module_summary = module_summary,
+    gene_modules = gene_modules,
+    module_eigengenes = module_eigengenes,
+    trait_correlations = trait_correlations,
+    settings = list(
+      max_genes = max_genes,
+      genes_used = ncol(dat_expr),
+      samples_used = nrow(dat_expr),
+      min_module_size = min_module_size,
+      soft_threshold_power = soft_power,
+      merge_cut_height = merge_cut_height,
+      network_type = network_type,
+      correlation = cor_type,
+      expression_scale_used = expression_scale_used,
+      pseudocount = pseudocount
+    ),
+    warnings = unique(warnings)
+  )
+}
+
+format_wgcna_module_summary <- function(module_summary, n = 100) {
+  preview <- utils::head(module_summary, n)
+  if ("mean_gene_variance" %in% names(preview)) {
+    preview$mean_gene_variance <- round(preview$mean_gene_variance, 4)
+  }
+  preview
+}
+
+format_wgcna_gene_modules <- function(gene_modules, n = 100) {
+  preview <- utils::head(gene_modules, n)
+  if ("variance" %in% names(preview)) {
+    preview$variance <- round(preview$variance, 4)
+  }
+  preview
+}
+
+format_wgcna_trait_correlations <- function(trait_correlations, n = 100) {
+  preview <- utils::head(trait_correlations, n)
+  numeric_columns <- intersect(c("correlation", "pvalue", "padj"), names(preview))
+  preview[numeric_columns] <- lapply(preview[numeric_columns], function(column) {
+    ifelse(is.na(column), "NA", formatC(column, format = "e", digits = 3))
+  })
+  preview
+}
+
+wgcna_module_eigengene_table <- function(wgcna_result) {
+  eigengenes <- wgcna_result$module_eigengenes
+  if (is.null(eigengenes) || nrow(eigengenes) == 0) {
+    return(data.frame())
+  }
+  output <- as.data.frame(eigengenes, stringsAsFactors = FALSE, check.names = FALSE)
+  output$sample_id <- rownames(output)
+  output <- output[c("sample_id", setdiff(names(output), "sample_id"))]
+  rownames(output) <- NULL
+  output
+}
+
+wgcna_module_color_fill <- function(colors) {
+  vapply(colors, function(color) {
+    tryCatch(
+      {
+        grDevices::col2rgb(color)
+        color
+      },
+      error = function(err) "#64748B"
+    )
+  }, character(1))
+}
+
+make_wgcna_module_plot <- function(wgcna_result) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("ggplot2 is not installed. Run scripts/install_packages.R first.", call. = FALSE)
+  }
+  plot_data <- wgcna_result$module_summary
+  if (is.null(plot_data) || nrow(plot_data) == 0) {
+    stop("No WGCNA modules are available to plot.", call. = FALSE)
+  }
+  plot_data$module <- factor(plot_data$module, levels = rev(plot_data$module))
+  plot_data$fill_color <- wgcna_module_color_fill(as.character(plot_data$module))
+
+  ggplot2::ggplot(plot_data, ggplot2::aes(x = gene_count, y = module, fill = fill_color)) +
+    ggplot2::geom_col(width = 0.72) +
+    ggplot2::scale_fill_identity() +
+    ggplot2::labs(x = "Genes", y = "Module") +
+    ggplot2::theme_minimal(base_size = 12) +
+    ggplot2::theme(panel.grid.minor = ggplot2::element_blank())
+}
+
+make_wgcna_trait_heatmap <- function(wgcna_result) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("ggplot2 is not installed. Run scripts/install_packages.R first.", call. = FALSE)
+  }
+  plot_data <- wgcna_result$trait_correlations
+  if (is.null(plot_data) || nrow(plot_data) == 0) {
+    stop("No usable metadata traits were available for module-trait correlations.", call. = FALSE)
+  }
+  plot_data$module <- factor(plot_data$module, levels = unique(plot_data$module))
+  plot_data$trait <- factor(plot_data$trait, levels = rev(unique(plot_data$trait)))
+  plot_data$label <- ifelse(is.na(plot_data$correlation), "NA", sprintf("%.2f", plot_data$correlation))
+
+  ggplot2::ggplot(plot_data, ggplot2::aes(x = module, y = trait, fill = correlation)) +
+    ggplot2::geom_tile(color = "#FFFFFF", linewidth = 0.35) +
+    ggplot2::geom_text(ggplot2::aes(label = label), size = 3.2) +
+    ggplot2::scale_fill_gradient2(
+      low = "#2563EB",
+      mid = "#F8FAFC",
+      high = "#B42318",
+      midpoint = 0,
+      limits = c(-1, 1),
+      na.value = "#E5E7EB"
+    ) +
+    ggplot2::labs(x = "Module", y = "Trait", fill = "Correlation") +
+    ggplot2::theme_minimal(base_size = 12) +
     ggplot2::theme(
       panel.grid = ggplot2::element_blank(),
       axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
@@ -2787,6 +3945,35 @@ build_reproduce_r_code <- function(workflow_result, lfc_cutoff = 1, reproducibil
     )
   }
 
+  wgcna <- if (is.list(reproducibility$wgcna) && identical(reproducibility$wgcna$status, "run")) {
+    reproducibility$wgcna
+  } else {
+    NULL
+  }
+  if (!is.null(wgcna)) {
+    lines <- c(
+      lines,
+      "if (requireNamespace(\"WGCNA\", quietly = TRUE)) {",
+      "  wgcna_result <- run_wgcna_analysis(",
+      "    workflow_result = result,",
+      sprintf("    max_genes = %s,", repro_r_number(wgcna$max_genes, "5000")),
+      sprintf("    min_module_size = %s,", repro_r_number(wgcna$min_module_size, "20")),
+      sprintf("    soft_power = %s,", repro_r_number(wgcna$soft_threshold_power, "6")),
+      sprintf("    merge_cut_height = %s,", repro_r_number(wgcna$merge_cut_height, "0.25")),
+      sprintf("    network_type = %s,", repro_r_string(if (is.null(wgcna$network_type)) "signed" else wgcna$network_type)),
+      sprintf("    cor_type = %s", repro_r_string(if (is.null(wgcna$correlation)) "pearson" else wgcna$correlation)),
+      "  )",
+      "  utils::write.csv(wgcna_result$module_summary, file.path(bundle_dir, \"reproduced_wgcna_module_summary.csv\"), row.names = FALSE)",
+      "  utils::write.csv(wgcna_result$gene_modules, file.path(bundle_dir, \"reproduced_wgcna_gene_modules.csv\"), row.names = FALSE)",
+      "  utils::write.csv(wgcna_result$trait_correlations, file.path(bundle_dir, \"reproduced_wgcna_module_trait_correlations.csv\"), row.names = FALSE)",
+      "  utils::write.csv(wgcna_module_eigengene_table(wgcna_result), file.path(bundle_dir, \"reproduced_wgcna_module_eigengenes.csv\"), row.names = FALSE)",
+      "} else {",
+      "  warning(\"WGCNA is not installed; skipping reproduced WGCNA outputs.\")",
+      "}",
+      ""
+    )
+  }
+
   lines
 }
 
@@ -2847,6 +4034,7 @@ write_analysis_report <- function(workflow_result, output_dir, lfc_cutoff = 1, r
     "- `analysis_count_matrix.csv`: exact post-preprocessing/post-filtering count matrix used by DESeq2, when the run used raw counts.",
     "- `analysis_metadata.csv`: exact metadata table used by the analysis, when sample metadata was required.",
     "- `enrichment_gene_sets_used.csv` and `pathway_gene_sets_used.csv`: exact matched gene-set tables used by ORA/pathway tabs, when those tabs were run.",
+    "- `wgcna_module_summary.csv`, `wgcna_gene_modules.csv`, `wgcna_module_trait_correlations.csv`, and `wgcna_module_eigengenes.csv`: WGCNA outputs, when the WGCNA tab was run.",
     "- `session_info.txt`: R session and package versions from the export session.",
     "",
     "## Recorded App Settings"

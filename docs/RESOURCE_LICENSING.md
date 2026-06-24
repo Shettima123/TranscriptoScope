@@ -10,6 +10,8 @@ This is project documentation, not legal advice. Before institutional, commercia
 | R and Bioconductor packages | No, installed by user or installer scripts | User R library | Each package keeps its own license and citation requirements |
 | Ensembl-derived gene annotation CSVs | Yes | `annotations/` | Subject to Ensembl/EMBL-EBI terms and attribution guidance; source and timestamp are recorded in `annotations/manifest.csv` |
 | Ensembl BioMart-derived GO mapping CSVs | Yes | `gene_sets/*_go.csv` | GO data products are CC BY 4.0; preserve GO attribution and release/source information |
+| Gene Ontology DAG term/relationship CSVs | Yes | `gene_sets/go_ontology_terms.csv`, `gene_sets/go_ontology_edges.csv` | Generated from the Gene Ontology `go-basic.obo` release; GO data products are CC BY 4.0 |
+| MSigDB TF.Target.GTRD mapping CSV | Yes | `gene_sets/human_hsapiens_gtrd.csv` | MSigDB C3:TFT GTRD-derived data; preserve source/release information and confirm redistribution or publication terms for the intended use |
 | KEGG pathway mapping CSVs | No | `gene_sets/cache/` contains only `README.md` in the release | KEGG-derived cache files are generated only after user-initiated KEGG REST access and are not covered by MIT |
 | User analysis outputs | No | Chosen by user during export | Owned/controlled by the user and subject to their institution's policies |
 

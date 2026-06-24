@@ -28,8 +28,8 @@ options(
 
 ncpus <- max(1L, parallel::detectCores(logical = FALSE) - 1L)
 
-cran_packages <- c("shiny", "ggplot2")
-bioc_packages <- c("DESeq2", "SummarizedExperiment", "S4Vectors", "fgsea")
+cran_packages <- c("shiny", "ggplot2", "WGCNA")
+bioc_packages <- c("DESeq2", "SummarizedExperiment", "S4Vectors", "fgsea", "impute", "preprocessCore")
 
 install_missing_cran <- function(packages) {
   installed <- rownames(utils::installed.packages())
@@ -57,7 +57,7 @@ install_missing_bioc <- function(packages) {
   }
 }
 
-install_missing_cran(cran_packages)
 install_missing_bioc(bioc_packages)
+install_missing_cran(cran_packages)
 
 message("All required packages are installed.")

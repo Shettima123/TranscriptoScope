@@ -58,7 +58,7 @@ if (-not $buildRootParent -or $buildRoot -eq [System.IO.Path]::GetPathRoot($buil
 $stageRoot = Join-Path $buildRoot "stage"
 $stageAppDir = Join-Path $stageRoot "TranscriptoScope"
 $installerScript = Join-Path $buildRoot "TranscriptoScope_Store.iss"
-$rootPackages = "shiny,ggplot2,DESeq2,SummarizedExperiment,S4Vectors,fgsea"
+$rootPackages = "shiny,ggplot2,DESeq2,SummarizedExperiment,S4Vectors,fgsea,WGCNA,impute,preprocessCore"
 
 if (Test-Path $buildRoot) {
   Assert-PathInsideDirectory -Path $buildRoot -ParentDirectory $buildRootParent

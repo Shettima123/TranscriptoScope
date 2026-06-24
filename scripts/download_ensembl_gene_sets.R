@@ -162,9 +162,9 @@ existing_manifest_file <- file.path(gene_set_dir, "manifest.csv")
 if (file.exists(existing_manifest_file)) {
   existing_manifest <- utils::read.csv(existing_manifest_file, stringsAsFactors = FALSE, check.names = FALSE)
   if ("collection" %in% names(existing_manifest)) {
-    kegg_rows <- existing_manifest[existing_manifest$collection == "kegg", , drop = FALSE]
-    if (nrow(kegg_rows) > 0) {
-      manifest <- rbind(manifest, kegg_rows[names(manifest)])
+    non_go_rows <- existing_manifest[existing_manifest$collection != "go", , drop = FALSE]
+    if (nrow(non_go_rows) > 0) {
+      manifest <- rbind(manifest, non_go_rows[names(manifest)])
     }
   }
 }

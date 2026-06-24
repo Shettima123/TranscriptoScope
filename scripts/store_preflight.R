@@ -7,7 +7,10 @@ required_packages <- c(
   "DESeq2",
   "SummarizedExperiment",
   "S4Vectors",
-  "fgsea"
+  "fgsea",
+  "WGCNA",
+  "impute",
+  "preprocessCore"
 )
 
 missing_packages <- required_packages[

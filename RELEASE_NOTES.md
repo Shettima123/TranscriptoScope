@@ -1,5 +1,14 @@
 # Release Notes
 
+## 0.4.5 - 2026-06-24
+
+- Added `TF.Target.GTRD` as a built-in pathway database option for both enrichment and ranked pathway analysis.
+- Added a Network Analysis tab with WGCNA module summaries, module-trait correlations, gene-module assignments, eigengenes, CSV downloads, and result-bundle exports.
+- Added pathway cnetplot rendering, PNG export, cnetplot edge CSV export, and result-bundle outputs.
+- Updated pathway cnetplot gene labels to prefer readable gene symbols over systematic gene identifiers when annotation is available.
+- Added GO DAG plotting for over-represented GO terms, including ontology-derived ancestor relationships, significance-level coloring, PNG export, node and edge CSV exports, and bundle outputs.
+- Added offline GO ontology relationship tables and a reproducible download script for rebuilding the DAG resources.
+
 ## 0.4.4 - 2026-06-21
 
 - Added a top-level Refresh button that reloads the current Shiny session.

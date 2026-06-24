@@ -10,15 +10,21 @@ Core dependencies:
 - Bioconductor
 - DESeq2
 - fgsea
+- WGCNA
+- impute
+- preprocessCore
 
 DESeq2 is distributed through Bioconductor and is licensed under LGPL. If you bundle R packages directly inside an installer, preserve license files and package citations.
 fgsea is distributed through Bioconductor under the MIT license and provides the preranked pathway-analysis engine.
+WGCNA is distributed through CRAN and provides the weighted gene co-expression network analysis engine. The WGCNA package imports Bioconductor packages including impute and preprocessCore.
 
 Suggested app citation text:
 
 > Differential expression analysis is performed with DESeq2 from Bioconductor. Users should cite DESeq2 when reporting results.
 
 > Preranked gene set enrichment analysis is performed with fgsea from Bioconductor. Users should cite fgsea when reporting pathway results.
+
+> Weighted gene co-expression network analysis is performed with WGCNA. Users should cite WGCNA when reporting module-network results.
 
 ## Ensembl Annotation
 
@@ -31,6 +37,12 @@ Bundled gene annotation CSVs and GO gene set CSVs are generated from Ensembl Bio
 Keep `annotations/manifest.csv` and `gene_sets/manifest.csv` with the package so users can see the source dataset, assembly, and download timestamp. Ensembl data and BioMart-derived exports remain subject to Ensembl/EMBL-EBI terms and attribution guidance.
 
 GO term-to-gene mappings are generated from BioMart GO annotation fields. Gene Ontology Consortium data products are licensed under CC BY 4.0, and public redistribution should preserve GO attribution, release/version information where available, and license notice.
+
+GO DAG plots use compact term and relationship CSV files generated from the Gene Ontology `go-basic.obo` file. These files are distributed under the same GO data product terms and can be regenerated with `scripts/download_go_ontology.R`.
+
+## MSigDB TF.Target.GTRD
+
+The bundled human `TF.Target.GTRD` gene sets are generated from the MSigDB C3:TFT GTRD symbol GMT file. MSigDB and GTRD resources remain third-party biological data and are not covered by the TranscriptoScope MIT license. Preserve the source URL and release recorded in `gene_sets/manifest.csv`, and confirm that your intended redistribution or publication use follows MSigDB and GTRD terms.
 
 ## KEGG Pathways
 

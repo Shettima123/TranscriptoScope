@@ -13,7 +13,7 @@ Creator: Dr. Abubakar Abdulkadir, Southern University A and M.
 
 ## If Package Setup Fails
 
-Double-click `Install_Packages.bat` after checking that R is installed and connected to the internet. DESeq2 and fgsea are Bioconductor packages, so the first package setup can take several minutes.
+Double-click `Install_Packages.bat` after checking that R is installed and connected to the internet. DESeq2, fgsea, and WGCNA support packages are installed from Bioconductor/CRAN, so the first package setup can take several minutes.
 
 ## Run Without Installing
 

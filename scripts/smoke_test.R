@@ -93,6 +93,40 @@ go_ora_result <- run_ora_analysis(
 )
 stopifnot(nrow(go_ora_result$results) > 0)
 stopifnot(identical(attr(prepared_go, "gene_set_summary")$match_mode, "ensembl"))
+go_ontology <- read_go_ontology(file.path(app_dir, "gene_sets"))
+go_dag_smoke <- build_go_dag(
+  ora_table = go_ora_result$results,
+  go_ontology = go_ontology,
+  top_n = 3,
+  padj_cutoff = 1,
+  max_ancestor_depth = 2
+)
+stopifnot(nrow(go_dag_smoke$nodes) > 0)
+stopifnot(all(c("child_id", "parent_id", "relationship") %in% names(go_dag_smoke$edges)))
+
+human_gtrd <- read_builtin_gene_sets(
+  gene_set_dir = file.path(app_dir, "gene_sets"),
+  gene_set_key = "human_hsapiens_gtrd",
+  domain = "tf_target_gtrd"
+)
+human_gtrd_terms <- unique(human_gtrd$table$term_id)
+stopifnot(length(human_gtrd_terms) > 0)
+gtrd_gene_sets <- human_gtrd$table[
+  human_gtrd$table$term_id %in% human_gtrd_terms[seq_len(min(3, length(human_gtrd_terms)))],
+  ,
+  drop = FALSE
+]
+gtrd_test_result <- data.frame(
+  gene_id = unique(gtrd_gene_sets$gene_symbol)[seq_len(min(8, length(unique(gtrd_gene_sets$gene_symbol))))],
+  baseMean = seq(100, length.out = min(8, length(unique(gtrd_gene_sets$gene_symbol))), by = 10),
+  log2FoldChange = rep(c(1.4, -1.2), length.out = min(8, length(unique(gtrd_gene_sets$gene_symbol)))),
+  pvalue = seq(0.001, length.out = min(8, length(unique(gtrd_gene_sets$gene_symbol))), by = 0.001),
+  padj = seq(0.01, length.out = min(8, length(unique(gtrd_gene_sets$gene_symbol))), by = 0.01),
+  stringsAsFactors = FALSE
+)
+prepared_gtrd <- prepare_builtin_gene_sets_for_results(gtrd_test_result, human_gtrd, "auto")
+stopifnot(identical(attr(prepared_gtrd, "gene_set_summary")$match_mode, "symbol"))
+stopifnot(nrow(prepared_gtrd) > 0)
 
 protein_coding_rows <- annotation_info$table[
   annotation_info$table$gene_biotype == "protein_coding" &
@@ -202,7 +236,7 @@ stopifnot(all(c("term_id", "padj", "genes") %in% names(ora_result$results)))
 stopifnot(nrow(selected_genes$table) > 0)
 
 pathway_result <- run_preranked_pathway_analysis(
-  result_table = raw_result$results,
+  result_table = annotate_result_table(raw_result$results, annotation_info, "auto"),
   gene_sets = gene_sets,
   rank_metric = "log2fc",
   min_set_size = 3,
@@ -211,10 +245,33 @@ pathway_result <- run_preranked_pathway_analysis(
 )
 stopifnot(nrow(pathway_result$results) > 0)
 stopifnot(all(c("term_id", "NES", "padj", "leading_edge_genes") %in% names(pathway_result$results)))
+stopifnot("gene_symbol" %in% names(pathway_result$ranked_table))
 stopifnot(nrow(pathway_result$ranked_table) >= 10)
 pathway_term <- pathway_result$results$term_id[1]
 leading_edge <- pathway_leading_edge_table(pathway_result, pathway_term)
 stopifnot(nrow(leading_edge) > 0)
+cnet_edges <- pathway_cnetplot_edges(pathway_result, top_n = 3, max_genes_per_pathway = 8, padj_cutoff = 0.1)
+stopifnot(nrow(cnet_edges) > 0)
+stopifnot(all(c("gene_symbol", "gene_label") %in% names(cnet_edges)))
+stopifnot(any(nzchar(cnet_edges$gene_symbol) & cnet_edges$gene_label == cnet_edges$gene_symbol))
+
+wgcna_smoke_result <- NULL
+if (requireNamespace("WGCNA", quietly = TRUE)) {
+  wgcna_smoke_result <- run_wgcna_analysis(
+    raw_result,
+    max_genes = 30,
+    min_module_size = 5,
+    soft_power = 6,
+    merge_cut_height = 0.25,
+    network_type = "signed",
+    cor_type = "pearson"
+  )
+  stopifnot(nrow(wgcna_smoke_result$module_summary) > 0)
+  stopifnot(nrow(wgcna_smoke_result$gene_modules) > 0)
+  stopifnot(nrow(wgcna_module_eigengene_table(wgcna_smoke_result)) > 0)
+} else {
+  warning("Skipping WGCNA smoke test because the WGCNA package is not installed.", call. = FALSE)
+}
 
 kegg_ora_result <- NULL
 if (identical(Sys.getenv("TRANSCRIPTOSCOPE_TEST_KEGG"), "1")) {
@@ -305,6 +362,14 @@ ggplot2::ggsave(
   dpi = 160
 )
 stopifnot(file.exists(file.path(bundle_dir, "ora_enrichment_plot.png")))
+ggplot2::ggsave(
+  filename = file.path(bundle_dir, "go_dag_plot.png"),
+  plot = make_go_dag_plot(go_ora_result$results, go_ontology, top_n = 3, padj_cutoff = 1, max_ancestor_depth = 2),
+  width = 12,
+  height = 7,
+  dpi = 160
+)
+stopifnot(file.exists(file.path(bundle_dir, "go_dag_plot.png")))
 
 ggplot2::ggsave(
   filename = file.path(bundle_dir, "pathway_summary_plot.png"),
@@ -327,10 +392,38 @@ ggplot2::ggsave(
   height = 6,
   dpi = 160
 )
+ggplot2::ggsave(
+  filename = file.path(bundle_dir, "pathway_cnetplot.png"),
+  plot = make_pathway_cnetplot(pathway_result, top_n = 3, max_genes_per_pathway = 8, padj_cutoff = 0.1),
+  width = 9,
+  height = 7,
+  dpi = 160
+)
 stopifnot(all(file.exists(file.path(
   bundle_dir,
-  c("pathway_summary_plot.png", "pathway_enrichment_plot.png", "pathway_heatmap.png")
+  c("pathway_summary_plot.png", "pathway_enrichment_plot.png", "pathway_heatmap.png", "pathway_cnetplot.png")
 ))))
+
+if (!is.null(wgcna_smoke_result)) {
+  ggplot2::ggsave(
+    filename = file.path(bundle_dir, "wgcna_module_plot.png"),
+    plot = make_wgcna_module_plot(wgcna_smoke_result),
+    width = 7,
+    height = 5,
+    dpi = 160
+  )
+  if (nrow(wgcna_smoke_result$trait_correlations) > 0) {
+    ggplot2::ggsave(
+      filename = file.path(bundle_dir, "wgcna_trait_heatmap.png"),
+      plot = make_wgcna_trait_heatmap(wgcna_smoke_result),
+      width = 8,
+      height = 5,
+      dpi = 160
+    )
+    stopifnot(file.exists(file.path(bundle_dir, "wgcna_trait_heatmap.png")))
+  }
+  stopifnot(file.exists(file.path(bundle_dir, "wgcna_module_plot.png")))
+}
 
 cat("Smoke test passed\n")
 cat(sprintf("Raw-count genes tested: %s\n", raw_result$genes_tested))
@@ -339,6 +432,10 @@ cat(sprintf("Fold-change rows processed: %s\n", fc_padj$genes_tested))
 cat(sprintf("ORA gene sets tested: %s\n", nrow(ora_result$results)))
 cat(sprintf("Ranked pathways tested: %s\n", nrow(pathway_result$results)))
 cat(sprintf("Built-in GO gene sets tested: %s\n", nrow(go_ora_result$results)))
+cat(sprintf("Human TF.Target.GTRD terms loaded: %s\n", length(human_gtrd_terms)))
+if (!is.null(wgcna_smoke_result)) {
+  cat(sprintf("WGCNA modules reported: %s\n", nrow(wgcna_smoke_result$module_summary)))
+}
 if (!is.null(kegg_ora_result)) {
   cat(sprintf("KEGG pathways tested: %s\n", nrow(kegg_ora_result$results)))
 }

@@ -11,11 +11,14 @@ Bundled resources in the public release:
 - Ensembl-derived gene annotation CSVs for Saccharomyces cerevisiae, Homo
   sapiens, and Drosophila melanogaster.
 - Ensembl BioMart-derived GO term-to-gene mapping CSVs for the same organisms.
+- MSigDB C3:TFT TF.Target.GTRD transcription factor target gene sets for Homo
+  sapiens.
 
 Those biological resources remain subject to their original source terms and
 attribution requirements. The included manifests record source URLs, datasets,
 assemblies, and download timestamps. Users should cite Ensembl, Gene Ontology,
-DESeq2, fgsea, and any other resources used in a specific analysis.
+MSigDB, GTRD, DESeq2, fgsea, WGCNA, and any other resources used in a specific
+analysis.
 
 KEGG pathway mapping CSV files are not bundled in the public release. KEGG
 support is implemented as optional user-initiated access to KEGG REST, with

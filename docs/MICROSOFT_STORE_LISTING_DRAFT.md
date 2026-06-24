@@ -6,13 +6,13 @@ TranscriptoScope
 
 ## Short Description
 
-Local Windows app for differential expression, enrichment, and ranked pathway analysis of RNA-seq data.
+Local Windows app for differential expression, enrichment, pathway, and WGCNA analysis of RNA-seq data.
 
 ## Full Description
 
-TranscriptoScope is a local Windows application for RNA-seq differential gene-expression analysis, functional enrichment, and ranked pathway analysis. It provides a graphical workflow for preparing expression matrices, checking metadata alignment, running DESeq2-style count-based analysis, exploring normalized-expression inputs, visualizing differential-expression results, and exporting reproducible result bundles.
+TranscriptoScope is a local Windows application for RNA-seq differential gene-expression analysis, functional enrichment, ranked pathway analysis, and WGCNA module analysis. It provides a graphical workflow for preparing expression matrices, checking metadata alignment, running DESeq2-style count-based analysis, exploring normalized-expression inputs, visualizing differential-expression results, and exporting reproducible result bundles.
 
-The app is designed for researchers, students, and laboratory teams who need a practical local workflow without writing every analysis step by hand. It supports raw read-count analysis with DESeq2, exploratory normalized-expression workflows, fold-change result inputs, built-in annotation resources for supported organisms, ORA enrichment, ranked pathway analysis, result plots, CSV exports, and reproducibility bundles containing result files and R code.
+The app is designed for researchers, students, and laboratory teams who need a practical local workflow without writing every analysis step by hand. It supports raw read-count analysis with DESeq2, exploratory normalized-expression workflows, fold-change result inputs, built-in annotation resources for supported organisms, ORA enrichment, ranked pathway analysis, WGCNA module analysis, result plots, CSV exports, and reproducibility bundles containing result files and R code.
 
 TranscriptoScope runs locally on the user's Windows computer. Uploaded datasets and analysis outputs remain on the local machine unless the user chooses to share them.
 
@@ -26,6 +26,7 @@ TranscriptoScope runs locally on the user's Windows computer. Uploaded datasets 
 - Optional KEGG retrieval through user-side cache when licensing and internet access allow.
 - ORA enrichment and Rosby's Lab-style ORA.
 - Ranked pathway analysis with fgsea.
+- WGCNA module analysis for sample-level count or normalized-expression workflows.
 - PCA, volcano, MA, regulation-summary, enrichment, and pathway plots.
 - Downloadable result bundles with CSV outputs and reproducibility R/R Markdown code.
 
@@ -43,7 +44,7 @@ If Microsoft requires a single best category, use Education for the first submis
 
 ## Search Terms
 
-RNA-seq, DESeq2, differential expression, bioinformatics, genomics, transcriptomics, pathway analysis, enrichment analysis, ORA, fgsea
+RNA-seq, DESeq2, differential expression, bioinformatics, genomics, transcriptomics, pathway analysis, enrichment analysis, ORA, fgsea, WGCNA
 
 ## Support URL
 
