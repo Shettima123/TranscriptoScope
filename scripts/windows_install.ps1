@@ -50,6 +50,17 @@ if (Test-Path $legacyStartMenuDir) {
 if (Test-Path $legacyUninstallKey) {
   Remove-Item -LiteralPath $legacyUninstallKey -Recurse -Force -ErrorAction SilentlyContinue
 }
+$uninstallRoot = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+Get-ChildItem -Path $uninstallRoot -ErrorAction SilentlyContinue |
+  ForEach-Object {
+    $entry = Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue
+    if (
+      $entry.DisplayName -like "TranscriptoScope version *" -or
+      $entry.UninstallString -like "*\TranscriptoScope\unins000.exe*"
+    ) {
+      Remove-Item -LiteralPath $_.PSPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+  }
 if (Test-Path $legacyInstallDir) {
   try {
     Assert-PathInsideDirectory -Path $legacyInstallDir -ParentDirectory $localAppData
@@ -111,7 +122,7 @@ if (-not (Test-Path $uninstallKey)) {
 }
 Set-ItemProperty -Path $uninstallKey -Name "DisplayName" -Value $appName
 Set-ItemProperty -Path $uninstallKey -Name "DisplayVersion" -Value $appVersion
-Set-ItemProperty -Path $uninstallKey -Name "Publisher" -Value "Dr. Abubakar Abdulkadir, Southern University A and M"
+Set-ItemProperty -Path $uninstallKey -Name "Publisher" -Value "Dr. Abubakar Abdulkadir | Dr. Rosby's Lab, Southern University A and M"
 Set-ItemProperty -Path $uninstallKey -Name "InstallLocation" -Value $installDir
 Set-ItemProperty -Path $uninstallKey -Name "UninstallString" -Value "`"$uninstallBatch`""
 Set-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value $iconPath

@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use TranscriptoScope in research, please cite the software release and the underlying statistical packages and biological resources used in your analysis. The MIT license applies to TranscriptoScope source code and documentation, not third-party biological resources."
 title: "TranscriptoScope"
-version: "0.4.5"
-date-released: "2026-06-24"
+version: "0.4.6"
+date-released: "2026-06-28"
 type: software
 license: MIT
 authors:
@@ -11,9 +11,9 @@ authors:
     name-particle: Dr.
     affiliation: "Southern University A and M"
 repository-code: "https://github.com/Shettima123/TranscriptoScope"
-url: "https://github.com/Shettima123/TranscriptoScope/releases/tag/v0.4.5"
+url: "https://github.com/Shettima123/TranscriptoScope/releases/tag/v0.4.6"
 doi: "10.5281/zenodo.20659461"
-abstract: "TranscriptoScope is a local Windows-friendly Shiny application for differential expression analysis, functional enrichment, and ranked pathway analysis using established R and Bioconductor workflows."
+abstract: "TranscriptoScope is a local Windows-friendly Shiny application for differential expression analysis, functional enrichment, ranked pathway analysis, and WGCNA coexpression-network analysis using established R and Bioconductor workflows."
 keywords:
   - RNA-seq
   - differential expression

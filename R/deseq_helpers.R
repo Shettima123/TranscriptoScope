@@ -4,6 +4,15 @@ read_dge_table <- function(path, name = basename(path)) {
   }
 
   lower_name <- tolower(name)
+  if (grepl("\\.(xlsx|xls)$", lower_name)) {
+    stop(
+      paste(
+        "Excel workbooks (.xlsx/.xls) are not read directly by this upload field.",
+        "Open the workbook, save the worksheet you want as CSV or tab-delimited text, then upload that exported file."
+      ),
+      call. = FALSE
+    )
+  }
   sep <- if (grepl("\\.(tsv|txt)$", lower_name)) "\t" else ","
 
   data <- tryCatch(
@@ -714,6 +723,54 @@ condition_levels <- function(metadata, condition_col) {
   unique(values)
 }
 
+normalize_design_columns <- function(columns) {
+  columns <- trimws(as.character(unlist(columns, use.names = FALSE)))
+  columns <- columns[!is.na(columns) & nzchar(columns) & columns != "__none__"]
+  unique(columns)
+}
+
+normalized_coefficient_text <- function(value) {
+  gsub("[^a-z0-9]", "", tolower(as.character(value)))
+}
+
+find_deseq_result_name <- function(results_names, include_tokens, exclude_tokens = character(), description = "coefficient") {
+  normalized_names <- normalized_coefficient_text(results_names)
+  include_tokens <- normalized_coefficient_text(include_tokens)
+  include_tokens <- include_tokens[nzchar(include_tokens)]
+  exclude_tokens <- normalized_coefficient_text(exclude_tokens)
+  exclude_tokens <- exclude_tokens[nzchar(exclude_tokens)]
+
+  matches <- vapply(normalized_names, function(name) {
+    includes <- all(vapply(include_tokens, grepl, logical(1), x = name, fixed = TRUE))
+    excludes <- any(vapply(exclude_tokens, grepl, logical(1), x = name, fixed = TRUE))
+    includes && !excludes
+  }, logical(1))
+
+  if (sum(matches) == 1) {
+    return(results_names[matches][1])
+  }
+
+  if (sum(matches) > 1) {
+    stop(
+      sprintf(
+        "The %s is ambiguous. Matching DESeq2 result names: %s. Use the custom coefficient name field.",
+        description,
+        paste(results_names[matches], collapse = ", ")
+      ),
+      call. = FALSE
+    )
+  }
+
+  stop(
+    sprintf(
+      "Could not find the %s. Available DESeq2 result names: %s.",
+      description,
+      paste(results_names, collapse = ", ")
+    ),
+    call. = FALSE
+  )
+}
+
 validate_analysis_settings <- function(
   count_matrix,
   metadata,
@@ -721,6 +778,8 @@ validate_analysis_settings <- function(
   treatment_level,
   reference_level,
   batch_col = NULL,
+  adjustment_cols = NULL,
+  interaction_col = NULL,
   min_total_count = 10
 ) {
   warnings <- character()
@@ -756,17 +815,26 @@ validate_analysis_settings <- function(
     )
   }
 
-  if (!is.null(batch_col) && nzchar(batch_col)) {
-    if (!batch_col %in% names(metadata)) {
-      stop("Choose a valid batch column.", call. = FALSE)
+  design_factor_cols <- normalize_design_columns(c(batch_col, adjustment_cols, interaction_col))
+  design_factor_cols <- setdiff(design_factor_cols, condition_col)
+  for (factor_col in design_factor_cols) {
+    if (!factor_col %in% names(metadata)) {
+      stop(sprintf("Choose a valid design factor column: %s.", factor_col), call. = FALSE)
     }
-    batch <- trimws(as.character(metadata[[batch_col]]))
-    if (any(is.na(batch) | batch == "")) {
-      stop("The selected batch column contains missing values.", call. = FALSE)
+    factor_values <- trimws(as.character(metadata[[factor_col]]))
+    if (any(is.na(factor_values) | factor_values == "")) {
+      stop(sprintf("The selected design factor column contains missing values: %s.", factor_col), call. = FALSE)
     }
-    if (length(unique(batch)) < 2) {
-      warnings <- c(warnings, "The selected batch column has only one level, so it does not add information.")
+    if (length(unique(factor_values)) < 2) {
+      warnings <- c(
+        warnings,
+        sprintf("The selected design factor column has only one level and does not add information: %s.", factor_col)
+      )
     }
+  }
+
+  if (!is.null(interaction_col) && nzchar(interaction_col) && identical(interaction_col, condition_col)) {
+    stop("The interaction factor must be different from the condition column.", call. = FALSE)
   }
 
   genes_kept <- sum(rowSums(count_matrix) >= min_total_count)
@@ -787,6 +855,12 @@ run_deseq2_workflow <- function(
   treatment_level,
   reference_level,
   batch_col = NULL,
+  adjustment_cols = NULL,
+  interaction_col = NULL,
+  interaction_reference_level = NULL,
+  interaction_comparison_level = NULL,
+  contrast_mode = c("condition", "interaction", "condition_at_interaction", "custom_name"),
+  custom_results_name = NULL,
   min_total_count = 10,
   alpha = 0.05
 ) {
@@ -801,6 +875,14 @@ run_deseq2_workflow <- function(
   }
 
   batch_col <- if (is.null(batch_col) || identical(batch_col, "__none__")) NULL else batch_col
+  adjustment_cols <- normalize_design_columns(c(batch_col, adjustment_cols))
+  adjustment_cols <- setdiff(adjustment_cols, condition_col)
+  interaction_col <- normalize_design_columns(interaction_col)
+  interaction_col <- if (length(interaction_col) == 0) NULL else interaction_col[1]
+  if (!is.null(interaction_col)) {
+    adjustment_cols <- setdiff(adjustment_cols, interaction_col)
+  }
+  contrast_mode <- match.arg(contrast_mode)
   input_warnings <- attr(metadata, "dge_warnings")
   aligned_metadata <- align_metadata_to_counts(count_matrix, metadata)
   workflow_warnings <- c(input_warnings, attr(aligned_metadata, "dge_warnings"))
@@ -813,6 +895,8 @@ run_deseq2_workflow <- function(
       treatment_level = treatment_level,
       reference_level = reference_level,
       batch_col = batch_col,
+      adjustment_cols = adjustment_cols,
+      interaction_col = interaction_col,
       min_total_count = min_total_count
     )
   )
@@ -824,17 +908,72 @@ run_deseq2_workflow <- function(
   condition <- stats::relevel(condition, ref = reference_level)
   analysis_metadata <- data.frame(condition = condition, row.names = rownames(aligned_metadata))
 
-  if (!is.null(batch_col)) {
-    analysis_metadata$batch <- factor(trimws(as.character(aligned_metadata[[batch_col]])))
-    design <- stats::as.formula("~ batch + condition")
-  } else {
-    design <- stats::as.formula("~ condition")
+  adjustment_design_cols <- character()
+  adjustment_map <- data.frame(
+    source_column = character(),
+    design_column = character(),
+    stringsAsFactors = FALSE
+  )
+  for (source_col in adjustment_cols) {
+    design_col <- if (!is.null(batch_col) && identical(source_col, batch_col)) {
+      "batch"
+    } else {
+      sprintf("adjustment_%s", length(adjustment_design_cols) + 1L)
+    }
+    analysis_metadata[[design_col]] <- factor(trimws(as.character(aligned_metadata[[source_col]])))
+    adjustment_design_cols <- c(adjustment_design_cols, design_col)
+    adjustment_map <- rbind(
+      adjustment_map,
+      data.frame(source_column = source_col, design_column = design_col, stringsAsFactors = FALSE)
+    )
   }
+
+  interaction_design_col <- NULL
+  if (!is.null(interaction_col)) {
+    interaction_factor <- factor(trimws(as.character(aligned_metadata[[interaction_col]])))
+    interaction_levels <- levels(interaction_factor)
+    if (length(interaction_levels) < 2) {
+      stop("The interaction factor needs at least two levels.", call. = FALSE)
+    }
+    if (is.null(interaction_reference_level) || !nzchar(interaction_reference_level)) {
+      interaction_reference_level <- interaction_levels[1]
+    }
+    if (!interaction_reference_level %in% interaction_levels) {
+      stop("The selected interaction reference level was not found in the interaction factor.", call. = FALSE)
+    }
+    interaction_factor <- stats::relevel(interaction_factor, ref = interaction_reference_level)
+    interaction_levels <- levels(interaction_factor)
+    if (is.null(interaction_comparison_level) || !nzchar(interaction_comparison_level)) {
+      interaction_comparison_level <- setdiff(interaction_levels, interaction_reference_level)[1]
+    }
+    if (!interaction_comparison_level %in% interaction_levels) {
+      stop("The selected interaction comparison level was not found in the interaction factor.", call. = FALSE)
+    }
+    if (identical(interaction_reference_level, interaction_comparison_level)) {
+      stop("Interaction reference and comparison levels must be different.", call. = FALSE)
+    }
+    interaction_design_col <- "interaction_factor"
+    analysis_metadata[[interaction_design_col]] <- interaction_factor
+  } else if (contrast_mode %in% c("interaction", "condition_at_interaction")) {
+    stop("Choose an interaction factor before using an interaction contrast.", call. = FALSE)
+  }
+
+  if (!is.null(interaction_design_col)) {
+    design_terms <- c(
+      adjustment_design_cols,
+      "condition",
+      interaction_design_col,
+      sprintf("condition:%s", interaction_design_col)
+    )
+  } else {
+    design_terms <- c(adjustment_design_cols, "condition")
+  }
+  design <- stats::as.formula(paste("~", paste(design_terms, collapse = " + ")))
 
   model_matrix <- stats::model.matrix(design, data = analysis_metadata)
   if (qr(model_matrix)$rank < ncol(model_matrix)) {
     stop(
-      "The selected design cannot be fit because condition and batch are confounded. Choose a simpler design or different batch column.",
+      "The selected DESeq2 design cannot be fit because one or more factors are confounded. Choose a simpler design or different adjustment/interaction columns.",
       call. = FALSE
     )
   }
@@ -864,11 +1003,68 @@ run_deseq2_workflow <- function(
     }
   )
 
-  deseq_result <- DESeq2::results(
-    dds,
-    contrast = c("condition", treatment_level, reference_level),
-    alpha = alpha
-  )
+  results_names <- DESeq2::resultsNames(dds)
+  result_name_used <- NA_character_
+  result_contrast_used <- "condition"
+  if (identical(contrast_mode, "condition")) {
+    deseq_result <- DESeq2::results(
+      dds,
+      contrast = c("condition", treatment_level, reference_level),
+      alpha = alpha
+    )
+    result_contrast_used <- sprintf("condition:%s_vs_%s", treatment_level, reference_level)
+  } else if (identical(contrast_mode, "custom_name")) {
+    custom_results_name <- trimws(as.character(custom_results_name))
+    if (length(custom_results_name) != 1 || is.na(custom_results_name) || !nzchar(custom_results_name)) {
+      stop("Enter a DESeq2 result name for the custom coefficient contrast.", call. = FALSE)
+    }
+    if (!custom_results_name %in% results_names) {
+      stop(
+        sprintf(
+          "Custom DESeq2 result name not found. Available names: %s.",
+          paste(results_names, collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+    result_name_used <- custom_results_name
+    deseq_result <- DESeq2::results(dds, name = result_name_used, alpha = alpha)
+    result_contrast_used <- sprintf("custom_name:%s", result_name_used)
+  } else {
+    interaction_name <- find_deseq_result_name(
+      results_names,
+      include_tokens = c("condition", treatment_level, interaction_design_col, interaction_comparison_level),
+      description = "interaction coefficient"
+    )
+    result_name_used <- interaction_name
+    if (identical(contrast_mode, "interaction")) {
+      deseq_result <- DESeq2::results(dds, name = interaction_name, alpha = alpha)
+      result_contrast_used <- sprintf(
+        "interaction:%s_condition_effect_difference_vs_%s",
+        interaction_comparison_level,
+        interaction_reference_level
+      )
+    } else {
+      condition_name <- find_deseq_result_name(
+        results_names,
+        include_tokens = c("condition", treatment_level, reference_level),
+        exclude_tokens = c(interaction_design_col),
+        description = "main condition coefficient"
+      )
+      deseq_result <- DESeq2::results(
+        dds,
+        contrast = list(c(condition_name, interaction_name)),
+        alpha = alpha
+      )
+      result_name_used <- paste(condition_name, interaction_name, sep = " + ")
+      result_contrast_used <- sprintf(
+        "condition_at_interaction_level:%s:%s_vs_%s",
+        interaction_comparison_level,
+        treatment_level,
+        reference_level
+      )
+    }
+  }
 
   result_table <- as.data.frame(deseq_result)
   result_table$gene_id <- rownames(result_table)
@@ -935,6 +1131,18 @@ run_deseq2_workflow <- function(
     treatment_level = treatment_level,
     reference_level = reference_level,
     batch_col = batch_col,
+    adjustment_cols = adjustment_cols,
+    adjustment_map = adjustment_map,
+    analysis_adjustment_cols = adjustment_design_cols,
+    interaction_col = interaction_col,
+    interaction_reference_level = interaction_reference_level,
+    interaction_comparison_level = interaction_comparison_level,
+    analysis_interaction_col = interaction_design_col,
+    contrast_mode = contrast_mode,
+    result_name_used = result_name_used,
+    result_contrast_used = result_contrast_used,
+    available_result_names = results_names,
+    design_formula = paste(deparse(design), collapse = " "),
     alpha = alpha,
     input_type = "counts",
     workflow_label = "DESeq2"
@@ -1705,8 +1913,10 @@ make_ora_plot <- function(ora_table, top_n = 20, padj_cutoff = 0.1) {
 
   plot_data <- utils::head(validate_rows[order(validate_rows$padj, validate_rows$pvalue), , drop = FALSE], top_n)
   plot_data$score <- -log10(pmax(plot_data$padj, .Machine$double.xmin))
-  plot_data$term_label <- ifelse(nzchar(plot_data$term_name), plot_data$term_name, plot_data$term_id)
-  plot_data$term_label <- factor(plot_data$term_label, levels = rev(plot_data$term_label))
+  labels <- ifelse(!is.na(plot_data$term_name) & nzchar(plot_data$term_name), plot_data$term_name, plot_data$term_id)
+  duplicate_labels <- duplicated(labels) | duplicated(labels, fromLast = TRUE)
+  labels[duplicate_labels] <- paste0(labels[duplicate_labels], " [", plot_data$term_id[duplicate_labels], "]")
+  plot_data$term_label <- factor(make.unique(labels), levels = rev(make.unique(labels)))
   plot_data$significant <- ifelse(plot_data$padj < padj_cutoff, "FDR pass", "FDR above cutoff")
 
   ggplot2::ggplot(plot_data, ggplot2::aes(x = score, y = term_label, fill = significant)) +
@@ -2603,15 +2813,16 @@ pathway_cnetplot_edges <- function(
     }
     gene_symbol[is.na(gene_symbol)] <- ""
     gene_label <- ifelse(nzchar(gene_symbol), gene_symbol, gene_table$gene_id)
+    clean_term_name <- strip_kegg_species_suffix(term$term_name[1])
     term_label <- if (isTRUE(show_ids)) {
-      paste0(term$term_name[1], " [", term$term_id[1], "]")
+      paste0(clean_term_name, " [", term$term_id[1], "]")
     } else {
-      term$term_name[1]
+      clean_term_name
     }
 
     data.frame(
       term_id = term$term_id[1],
-      term_name = term$term_name[1],
+      term_name = clean_term_name,
       pathway_label = term_label,
       direction = term$direction[1],
       NES = term$NES[1],
@@ -2705,8 +2916,8 @@ make_pathway_cnetplot <- function(
   )
 
   term_nodes$label <- ifelse(
-    nchar(term_nodes$pathway_label) > 48,
-    paste0(substr(term_nodes$pathway_label, 1, 45), "..."),
+    nchar(term_nodes$pathway_label) > 38,
+    paste0(substr(term_nodes$pathway_label, 1, 35), "..."),
     term_nodes$pathway_label
   )
   term_nodes$label_y <- term_nodes$y + ifelse(term_nodes$y >= 0, 0.13, -0.13)
@@ -2793,22 +3004,38 @@ make_pathway_cnetplot <- function(
       na.value = "#94A3B8"
     ) +
     ggplot2::scale_size_continuous(
-      range = c(5.5, 11),
+      range = c(6.5, 13),
       name = "size",
       breaks = size_breaks
     ) +
-    ggplot2::coord_equal(xlim = c(-1.28, 1.28), ylim = c(-1.24, 1.24), clip = "off") +
+    ggplot2::coord_equal(xlim = c(-1.12, 1.12), ylim = c(-1.12, 1.12), clip = "off") +
     ggplot2::guides(
-      color = ggplot2::guide_legend(override.aes = list(linewidth = 1.3, alpha = 1)),
-      fill = ggplot2::guide_colorbar(order = 1),
-      size = ggplot2::guide_legend(order = 2)
+      color = ggplot2::guide_legend(
+        title = "category",
+        nrow = 2,
+        byrow = TRUE,
+        override.aes = list(linewidth = 1.3, alpha = 1),
+        order = 3
+      ),
+      fill = ggplot2::guide_colorbar(
+        order = 1,
+        barwidth = grid::unit(3.5, "cm"),
+        barheight = grid::unit(0.35, "cm"),
+        title.position = "top"
+      ),
+      size = ggplot2::guide_legend(order = 2, title.position = "top")
     ) +
     ggplot2::theme_void(base_size = 12) +
     ggplot2::theme(
-      legend.position = "right",
-      legend.title = ggplot2::element_text(size = 11),
-      legend.text = ggplot2::element_text(size = 9),
-      plot.margin = ggplot2::margin(20, 45, 20, 45)
+      legend.position = "bottom",
+      legend.box = "vertical",
+      legend.title = ggplot2::element_text(size = 10),
+      legend.text = ggplot2::element_text(size = 8),
+      legend.key.height = grid::unit(0.35, "cm"),
+      legend.key.width = grid::unit(0.9, "cm"),
+      legend.margin = ggplot2::margin(0, 0, 0, 0),
+      legend.box.margin = ggplot2::margin(0, 0, 0, 0),
+      plot.margin = ggplot2::margin(4, 4, 4, 4)
     )
 }
 
@@ -3661,6 +3888,15 @@ repro_r_string <- function(value) {
   sprintf("\"%s\"", value)
 }
 
+repro_r_character_vector <- function(values) {
+  values <- trimws(as.character(unlist(values, use.names = FALSE)))
+  values <- values[!is.na(values) & nzchar(values)]
+  if (length(values) == 0) {
+    return("NULL")
+  }
+  sprintf("c(%s)", paste(vapply(values, repro_r_string, character(1)), collapse = ", "))
+}
+
 repro_r_number <- function(value, default = "NA_real_") {
   if (is.null(value) || length(value) == 0 || is.na(value[1])) {
     return(default)
@@ -3791,7 +4027,14 @@ build_reproduce_r_code <- function(workflow_result, lfc_cutoff = 1, reproducibil
   )
 
   if (identical(input_type, "counts")) {
-    batch_literal <- if (is.null(workflow_result$batch_col)) "NULL" else "\"batch\""
+    analysis_adjustment_cols <- normalize_design_columns(workflow_result$analysis_adjustment_cols)
+    batch_literal <- if ("batch" %in% analysis_adjustment_cols) "\"batch\"" else "NULL"
+    adjustment_literal <- repro_r_character_vector(setdiff(analysis_adjustment_cols, "batch"))
+    interaction_literal <- repro_r_string(workflow_result$analysis_interaction_col)
+    interaction_reference_literal <- repro_r_string(workflow_result$interaction_reference_level)
+    interaction_comparison_literal <- repro_r_string(workflow_result$interaction_comparison_level)
+    contrast_mode_literal <- repro_r_string(if (is.null(workflow_result$contrast_mode)) "condition" else workflow_result$contrast_mode)
+    custom_name_literal <- repro_r_string(if (is.null(workflow_result$result_name_used)) NULL else workflow_result$result_name_used)
     lines <- c(
       lines,
       "# analysis_count_matrix.csv and analysis_metadata.csv are the exact post-preprocessing/filtering inputs used by DESeq2.",
@@ -3804,6 +4047,12 @@ build_reproduce_r_code <- function(workflow_result, lfc_cutoff = 1, reproducibil
       sprintf("  treatment_level = %s,", repro_r_string(workflow_result$treatment_level)),
       sprintf("  reference_level = %s,", repro_r_string(workflow_result$reference_level)),
       sprintf("  batch_col = %s,", batch_literal),
+      sprintf("  adjustment_cols = %s,", adjustment_literal),
+      sprintf("  interaction_col = %s,", interaction_literal),
+      sprintf("  interaction_reference_level = %s,", interaction_reference_literal),
+      sprintf("  interaction_comparison_level = %s,", interaction_comparison_literal),
+      sprintf("  contrast_mode = %s,", contrast_mode_literal),
+      sprintf("  custom_results_name = %s,", custom_name_literal),
       "  min_total_count = 0,",
       "  alpha = alpha",
       ")"
@@ -4019,6 +4268,14 @@ write_analysis_report <- function(workflow_result, output_dir, lfc_cutoff = 1, r
     sprintf("- Reference group: %s", repro_scalar(workflow_result$reference_level)),
     sprintf("- Comparison group: %s", repro_scalar(workflow_result$treatment_level)),
     sprintf("- Batch column: %s", repro_scalar(workflow_result$batch_col)),
+    sprintf("- Adjustment columns: %s", repro_scalar(workflow_result$adjustment_cols)),
+    sprintf("- Interaction column: %s", repro_scalar(workflow_result$interaction_col)),
+    sprintf("- Interaction reference level: %s", repro_scalar(workflow_result$interaction_reference_level)),
+    sprintf("- Interaction comparison level: %s", repro_scalar(workflow_result$interaction_comparison_level)),
+    sprintf("- Fitted design: %s", repro_scalar(workflow_result$design_formula)),
+    sprintf("- DESeq2 contrast mode: %s", repro_scalar(workflow_result$contrast_mode)),
+    sprintf("- DESeq2 result contrast: %s", repro_scalar(workflow_result$result_contrast_used)),
+    sprintf("- DESeq2 result name: %s", repro_scalar(workflow_result$result_name_used)),
     sprintf("- Genes tested: %s", repro_scalar(workflow_result$genes_tested)),
     sprintf("- Samples tested: %s", repro_scalar(workflow_result$samples_tested)),
     sprintf("- Adjusted p-value threshold: %s", repro_scalar(workflow_result$alpha)),
@@ -4122,6 +4379,8 @@ write_result_bundle <- function(workflow_result, output_dir, lfc_cutoff = 1, rep
     sprintf("Workflow: %s", if (is.null(workflow_result$workflow_label)) "DESeq2" else workflow_result$workflow_label),
     if (!is.null(workflow_result$reference_level)) sprintf("Reference group: %s", workflow_result$reference_level),
     if (!is.null(workflow_result$treatment_level)) sprintf("Comparison group: %s", workflow_result$treatment_level),
+    if (!is.null(workflow_result$design_formula)) sprintf("Fitted design: %s", workflow_result$design_formula),
+    if (!is.null(workflow_result$result_contrast_used)) sprintf("DESeq2 result contrast: %s", workflow_result$result_contrast_used),
     sprintf("Genes tested: %s", workflow_result$genes_tested),
     if (!is.na(workflow_result$samples_tested)) sprintf("Samples tested: %s", workflow_result$samples_tested),
     sprintf("Adjusted p-value threshold: %s", workflow_result$alpha),

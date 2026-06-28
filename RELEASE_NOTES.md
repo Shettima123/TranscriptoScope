@@ -1,5 +1,18 @@
 # Release Notes
 
+## Unreleased
+
+## 0.4.6 - 2026-06-28
+
+- Added advanced DESeq2 design controls for multiple additive adjustment factors, optional condition-by-factor interaction designs, interaction contrasts, condition effects within interaction levels, and custom DESeq2 result-name contrasts.
+- Recorded fitted DESeq2 design formulas, contrast modes, result names, and interaction settings in analysis reports, result-bundle metadata, and reproducibility code.
+- Added user-facing diagnostic guidance cards that explain common input and workflow failures and list concrete repair steps for unsupported Excel workbooks, decimal raw-count inputs, missing values, metadata mismatch, duplicate IDs, filtering issues, confounded DESeq2 designs, gene-set overlap problems, and missing R packages.
+- Added file-aware diagnostic scanning so upload errors can report the most likely bad row, gene, and column when the uploaded table contains blanks, text in numeric columns, decimal values in read-count mode, duplicate IDs, or an unsupported workbook format.
+- Added downloadable example input templates for raw counts, matching sample metadata, normalized expression, fold-change tables, custom gene sets, and a combined example-input ZIP.
+- Prevented ORA plots from failing when multiple enriched terms share the same display name, and made the GO DAG panel show guidance instead of a red render error when the current enrichment result is not GO-based.
+- Improved pathway cnetplot exports by removing repeated KEGG organism suffixes from pathway labels, enlarging the plotted network area, and adding a high-resolution TIFF download and result-bundle export.
+- Changed the top-level Refresh button into a Reset / Refresh control that clears result and error state before reloading, with a browser-side reload fallback for failed sessions.
+
 ## 0.4.5 - 2026-06-24
 
 - Added `TF.Target.GTRD` as a built-in pathway database option for both enrichment and ranked pathway analysis.

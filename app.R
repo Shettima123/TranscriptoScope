@@ -11,10 +11,10 @@ source(file.path("R", "deseq_helpers.R"), local = TRUE)
 
 app_version <- tryCatch(
   trimws(readLines("VERSION", warn = FALSE)[1]),
-  error = function(err) "0.4.5"
+  error = function(err) "0.4.6"
 )
 if (!nzchar(app_version) || is.na(app_version)) {
-  app_version <- "0.4.5"
+  app_version <- "0.4.6"
 }
 
 matrix_modes <- c("counts", "normalized")
@@ -74,6 +74,16 @@ example_file_for_mode <- function(mode) {
   )
 }
 
+example_download_specs <- list(
+  list(id = "download_example_counts", label = "Example Counts CSV", file = "counts.csv"),
+  list(id = "download_example_metadata", label = "Example Metadata CSV", file = "metadata.csv"),
+  list(id = "download_example_normalized", label = "Example Normalized CSV", file = "normalized_expression.csv"),
+  list(id = "download_example_fc_padj", label = "Example FC + padj CSV", file = "fold_changes_padj.csv"),
+  list(id = "download_example_fc_only", label = "Example FC Only CSV", file = "fold_changes_only.csv"),
+  list(id = "download_example_gene_sets", label = "Example Gene Sets CSV", file = "gene_sets.csv"),
+  list(id = "download_example_bundle", label = "All Example Inputs ZIP", file = NA_character_)
+)
+
 gene_set_collection_info <- function(collection_choice, default = "go_all") {
   collection_choice <- if (is.null(collection_choice) || !nzchar(collection_choice)) default else collection_choice
   switch(
@@ -84,6 +94,298 @@ gene_set_collection_info <- function(collection_choice, default = "go_all") {
     kegg_pathway = list(collection = "kegg", domain = "kegg_pathway"),
     tf_target_gtrd = list(collection = "gtrd", domain = "tf_target_gtrd"),
     list(collection = "go", domain = "all")
+  )
+}
+
+diagnostic_details <- function(message, input_name = NULL, input_type = NULL, context = NULL, probable_cause = NULL) {
+  message <- trimws(as.character(message)[1])
+  probable_cause <- trimws(as.character(probable_cause)[1])
+  if (is.na(probable_cause)) {
+    probable_cause <- ""
+  }
+  if (is.na(message) || !nzchar(message)) {
+    message <- if (nzchar(probable_cause)) probable_cause else "TranscriptoScope could not identify the exact error message."
+  }
+  input_name <- if (is.null(input_name) || is.na(input_name) || !nzchar(input_name)) "" else input_name
+  input_label <- mode_label(if (is.null(input_type)) "" else input_type)
+  text <- tolower(paste(message, probable_cause, input_name, input_label, context, collapse = " "))
+
+  default_fixes <- c(
+    "Confirm that the selected input data type matches the file you uploaded.",
+    "Use the Preflight tab to check gene count, sample count, metadata rows, and warnings before running analysis.",
+    "If the file came from Excel, export the active worksheet as CSV or tab-delimited text before uploading."
+  )
+
+  make_details <- function(title, fixes) {
+    list(
+      title = title,
+      message = message,
+      probable_cause = if (nzchar(probable_cause) && !grepl(probable_cause, message, fixed = TRUE)) probable_cause else "",
+      fixes = unique(c(fixes, default_fixes))
+    )
+  }
+
+  if (grepl("excel|\\.xlsx|\\.xls|embedded null|eof within quoted string", text)) {
+    return(make_details(
+      "Excel workbook detected",
+      c(
+        "Open the workbook in Excel and save the worksheet you want as CSV or tab-delimited text.",
+        "Upload the exported CSV/TSV file as the data file.",
+        "If the worksheet contains decimal CPM/TPM/FPKM/logCPM values, choose Normalized expression data instead of Read counts data (DESeq2)."
+      )
+    ))
+  }
+
+  if (grepl("must contain at least two columns|needs a gene id column plus one or more", text)) {
+    return(make_details(
+      "The file does not look like an analysis table",
+      c(
+        "Use a header row with gene IDs in the first column.",
+        "Add at least one numeric sample column for matrix inputs, or a fold-change column for fold-change modes.",
+        "For CSV files, use commas; for TSV/TXT files, use tabs."
+      )
+    ))
+  }
+
+  if (grepl("decimal values", text)) {
+    return(make_details(
+      "Raw-count mode received decimal values",
+      c(
+        "Choose Normalized expression data if the values are CPM, TPM, FPKM, RPKM, normalized counts, or log expression.",
+        "Use Read counts data (DESeq2) only for raw non-negative integer counts from tools such as featureCounts or HTSeq.",
+        "Do not round normalized expression values to force DESeq2; use the original raw count matrix when available."
+      )
+    ))
+  }
+
+  if (grepl("missing or non-numeric|blank or non-numeric|empty values|contains missing|non-finite|cannot be used", text)) {
+    return(make_details(
+      "The file contains blank or non-numeric values",
+      c(
+        "Find and fill or remove blank cells in numeric sample columns.",
+        "Remove text such as comments, percent signs, or formulas that produce blanks from numeric columns.",
+        "If only one gene/sample has the problem, remove that row or correct the cell and upload again."
+      )
+    ))
+  }
+
+  if (grepl("gene ids must be unique|first duplicate|sample names must be unique|metadata sample ids must be unique", text)) {
+    return(make_details(
+      "Duplicate identifiers were found",
+      c(
+        "Make gene IDs unique before upload, or collapse duplicate gene rows outside the app.",
+        "Make sample column names unique.",
+        "For metadata, each sample_id must appear only once."
+      )
+    ))
+  }
+
+  if (grepl("metadata|sample id|sample\\(s\\)", text)) {
+    return(make_details(
+      "Metadata does not match the data matrix",
+      c(
+        "Make the metadata sample_id values exactly match the sample column names in the data file.",
+        "Check spelling, spaces, capitalization, punctuation, and hidden trailing spaces.",
+        "If you do not need custom metadata, remove the metadata file and let the app infer groups from sample names."
+      )
+    ))
+  }
+
+  if (grepl("condition column|reference group|comparison group|at least two groups|replicates", text)) {
+    return(make_details(
+      "The selected comparison cannot be formed",
+      c(
+        "Choose a condition column with at least two groups.",
+        "Choose different reference and comparison groups.",
+        "For statistical testing, include biological replicates in each group whenever possible."
+      )
+    ))
+  }
+
+  if (grepl("confounded|cannot be fit|simpler design|interaction factor|design factor", text)) {
+    return(make_details(
+      "The selected DESeq2 design is not estimable",
+      c(
+        "Remove adjustment factors that perfectly match the condition groups.",
+        "Use a simpler design when a batch, donor, or interaction factor is confounded with condition.",
+        "Check the metadata table to confirm every factor level has samples in the needed condition groups."
+      )
+    ))
+  }
+
+  if (grepl("no genes pass|fewer than two genes pass|minimum total count|minimum cpm|zero total counts", text)) {
+    return(make_details(
+      "Filtering removed too much data",
+      c(
+        "Lower the minimum total count or CPM threshold.",
+        "Check that sample columns contain expression/count values and not metadata.",
+        "Remove samples with zero total counts before uploading."
+      )
+    ))
+  }
+
+  if (grepl("fold-change|adjusted p-value|padj|fdr|qvalue", text)) {
+    return(make_details(
+      "Fold-change table columns could not be recognized",
+      c(
+        "Include a gene ID column and a numeric fold-change column.",
+        "For Fold changes and adjusted p-values mode, include a padj, FDR, qvalue, or adjusted_p_value column.",
+        "Use log2 fold changes unless you intentionally select linear fold-change scale."
+      )
+    ))
+  }
+
+  if (grepl("gene sets overlapped|pathways overlap|ranked genes|size filtering|selected deg genes|enrichment", text)) {
+    return(make_details(
+      "Enrichment/pathway inputs do not overlap enough genes",
+      c(
+        "Confirm the selected organism matches the gene IDs in the result table.",
+        "Try the other gene-ID matching mode or turn off case-sensitive matching.",
+        "Relax DEG, pathway-size, or gene-set-size filters and rerun."
+      )
+    ))
+  }
+
+  if (grepl("kegg|download|internet|rest", text)) {
+    return(make_details(
+      "The selected online resource could not be loaded",
+      c(
+        "Confirm the computer has internet access if KEGG is selected.",
+        "Try GO or TF.Target.GTRD if you need a fully bundled/offline source.",
+        "Restart the app and retry after the network connection is stable."
+      )
+    ))
+  }
+
+  if (grepl("package is not installed|required", text)) {
+    return(make_details(
+      "A required R package is missing",
+      c(
+        "Run Install_Packages.bat from the TranscriptoScope folder.",
+        "Restart TranscriptoScope after package installation finishes.",
+        "If installation fails, check your internet connection and R package library permissions."
+      )
+    ))
+  }
+
+  if (grepl("wgcna", text)) {
+    return(make_details(
+      "WGCNA requirements were not met",
+      c(
+        "Use count or normalized-expression input, not fold-change-only input.",
+        "Use at least four samples and enough variable genes after filtering.",
+        "Lower the WGCNA variable-gene filter or use a larger sample-level expression matrix."
+      )
+    ))
+  }
+
+  make_details("TranscriptoScope could not continue", character())
+}
+
+diagnose_uploaded_table <- function(input_path = NULL, input_name = NULL, input_type = NULL) {
+  if (is.null(input_path) || is.na(input_path) || !nzchar(input_path) || !file.exists(input_path)) {
+    return(NULL)
+  }
+  input_name <- if (is.null(input_name) || is.na(input_name) || !nzchar(input_name)) basename(input_path) else input_name
+  lower_name <- tolower(input_name)
+  if (grepl("\\.(xlsx|xls)$", lower_name)) {
+    return("The uploaded file is an Excel workbook. Save the worksheet as CSV or TSV, then upload that exported text file.")
+  }
+
+  data <- tryCatch(
+    read_dge_table(input_path, input_name),
+    error = function(err) {
+      sprintf("The uploaded file could not be read as a table: %s", conditionMessage(err))
+    }
+  )
+  if (is.character(data)) {
+    return(data)
+  }
+  if (ncol(data) < 2) {
+    return("The uploaded table has fewer than two columns. Use gene IDs in the first column and sample/result values in additional columns.")
+  }
+
+  gene_ids <- trimws(as.character(data[[1]]))
+  if (any(is.na(gene_ids) | gene_ids == "")) {
+    row_index <- which(is.na(gene_ids) | gene_ids == "")[1] + 1L
+    return(sprintf("The first gene-ID column has a blank value at data row %s.", row_index))
+  }
+  if (anyDuplicated(gene_ids)) {
+    duplicated_gene <- gene_ids[duplicated(gene_ids)][1]
+    return(sprintf("The uploaded table has duplicate gene IDs. First duplicate: %s.", duplicated_gene))
+  }
+
+  value_columns <- data[-1]
+  numeric_values <- lapply(value_columns, function(column) {
+    values <- trimws(as.character(column))
+    values[is.na(values)] <- ""
+    suppressWarnings(as.numeric(gsub(",", "", values, fixed = TRUE)))
+  })
+  numeric_column_has_values <- vapply(numeric_values, function(column) any(!is.na(column)), logical(1))
+  if (!any(numeric_column_has_values)) {
+    return("No numeric value columns were detected after the gene-ID column.")
+  }
+
+  for (column_index in which(numeric_column_has_values)) {
+    raw_values <- trimws(as.character(value_columns[[column_index]]))
+    raw_values[is.na(raw_values)] <- ""
+    numeric_column <- numeric_values[[column_index]]
+    bad_rows <- which(raw_values == "" | is.na(numeric_column))
+    if (length(bad_rows) > 0) {
+      row_index <- bad_rows[1]
+      return(sprintf(
+        "The uploaded table contains a blank or non-numeric value at row %s, gene %s, column %s.",
+        row_index + 1L,
+        gene_ids[row_index],
+        names(value_columns)[column_index]
+      ))
+    }
+  }
+
+  if (identical(input_type, "counts")) {
+    for (column_index in which(numeric_column_has_values)) {
+      numeric_column <- numeric_values[[column_index]]
+      decimal_rows <- which(!is.na(numeric_column) & abs(numeric_column - round(numeric_column)) > 1e-6)
+      if (length(decimal_rows) > 0) {
+        row_index <- decimal_rows[1]
+        return(sprintf(
+          "Read counts mode found decimal values, starting at row %s, gene %s, column %s. These look like normalized expression values rather than raw integer counts.",
+          row_index + 1L,
+          gene_ids[row_index],
+          names(value_columns)[column_index]
+        ))
+      }
+    }
+  }
+
+  NULL
+}
+
+diagnostic_alert <- function(message, severity = "warning", input_name = NULL, input_path = NULL, input_type = NULL, context = NULL) {
+  probable_cause <- diagnose_uploaded_table(
+    input_path = input_path,
+    input_name = input_name,
+    input_type = input_type
+  )
+  details <- diagnostic_details(
+    message = message,
+    input_name = input_name,
+    input_type = input_type,
+    context = context,
+    probable_cause = probable_cause
+  )
+  div(
+    class = paste("alert-block", severity, "diagnostic-block"),
+    tags$strong(details$title),
+    tags$p(class = "diagnostic-message", details$message),
+    if (nzchar(details$probable_cause)) {
+      tags$p(class = "diagnostic-message", tags$strong("Most likely cause: "), details$probable_cause)
+    },
+    tags$div(
+      class = "diagnostic-fixes",
+      tags$span("How to address it"),
+      tags$ul(lapply(details$fixes, tags$li))
+    )
   )
 }
 
@@ -275,6 +577,30 @@ body {
   background: #FEF2F2;
 }
 
+.diagnostic-block strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.diagnostic-message {
+  margin: 0 0 8px;
+}
+
+.diagnostic-fixes span {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.diagnostic-fixes ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.diagnostic-fixes li {
+  margin-bottom: 3px;
+}
+
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -408,7 +734,16 @@ ui <- fluidPage(
     tags$style(HTML(app_css)),
     tags$script(HTML(
       "Shiny.addCustomMessageHandler('transcriptoscope-refresh', function(message) {
-        window.location.reload();
+        window.location.replace(window.location.pathname + window.location.search);
+      });
+      document.addEventListener('click', function(event) {
+        var button = event.target.closest ? event.target.closest('#refresh_app') : null;
+        if (!button) {
+          return;
+        }
+        window.setTimeout(function() {
+          window.location.replace(window.location.pathname + window.location.search);
+        }, 800);
       });"
     ))
   ),
@@ -428,7 +763,7 @@ ui <- fluidPage(
       ),
       div(
         class = "header-actions",
-        actionButton("refresh_app", "Refresh", class = "refresh-button", title = "Reload the app"),
+        actionButton("refresh_app", "Reset / Refresh", class = "refresh-button", title = "Clear errors, reset the app state, and reload"),
         div(class = "status-line", textOutput("runtime_status", inline = TRUE))
       )
     ),
@@ -456,6 +791,10 @@ ui <- fluidPage(
             "count_file",
             "Data file",
             accept = c(".csv", ".tsv", ".txt")
+          ),
+          div(
+            class = "soft-note",
+            "Use CSV, TSV, or TXT tables. If your data are in Excel, save the worksheet as CSV/TSV first. Decimal CPM/TPM/FPKM/logCPM values belong in Normalized expression data mode."
           ),
           uiOutput("metadata_upload"),
           uiOutput("input_status")
@@ -689,9 +1028,10 @@ ui <- fluidPage(
                 numericInput("pathway_cnet_top_n", "Top pathways in cnetplot", value = 5, min = 1, max = 20, step = 1),
                 numericInput("pathway_cnet_max_genes", "Max genes per pathway", value = 15, min = 3, max = 100, step = 1),
                 downloadButton("download_pathway_cnetplot", "Pathway Cnetplot PNG"),
+                downloadButton("download_pathway_cnetplot_tiff", "Pathway Cnetplot TIFF"),
                 downloadButton("download_pathway_cnet_edges", "Cnetplot Edges CSV")
               ),
-              plotOutput("pathway_cnetplot", height = "640px")
+              plotOutput("pathway_cnetplot", height = "760px")
             ),
             div(
               class = "panel pathway-results-panel",
@@ -825,7 +1165,10 @@ ui <- fluidPage(
             div(
               class = "panel",
               h2("Downloads"),
-              uiOutput("download_controls")
+              h3("Current Results"),
+              uiOutput("download_controls"),
+              h3("Example Inputs"),
+              uiOutput("example_download_controls")
             )
           )
         )
@@ -836,10 +1179,6 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   app_dir <- normalizePath(".", mustWork = TRUE)
-
-  observeEvent(input$refresh_app, {
-    session$sendCustomMessage("transcriptoscope-refresh", list())
-  }, ignoreInit = TRUE)
 
   output$runtime_status <- renderText({
     deseq_version <- if (requireNamespace("DESeq2", quietly = TRUE)) {
@@ -890,7 +1229,35 @@ server <- function(input, output, session) {
     mode_controls <- switch(
       input$input_type,
       counts = tagList(
-        selectInput("batch_col", "Batch column", choices = c("None" = "__none__"), selectize = FALSE),
+        selectInput("batch_col", "Primary adjustment/batch column", choices = c("None" = "__none__"), selectize = FALSE),
+        selectizeInput(
+          "adjustment_cols",
+          "Additional factors to adjust for",
+          choices = character(),
+          multiple = TRUE,
+          options = list(plugins = list("remove_button"))
+        ),
+        checkboxInput("use_interaction_design", "Use interaction design / custom contrast", value = FALSE),
+        conditionalPanel(
+          condition = "input.use_interaction_design == true",
+          selectInput("interaction_col", "Interaction factor", choices = c("None" = "__none__"), selectize = FALSE),
+          selectInput("interaction_reference_level", "Interaction reference level", choices = character(), selectize = FALSE),
+          selectInput("interaction_comparison_level", "Interaction comparison level", choices = character(), selectize = FALSE),
+          selectInput(
+            "deseq_contrast_mode",
+            "DESeq2 contrast to report",
+            choices = c(
+              "Main condition effect, adjusted for all factors" = "condition",
+              "Interaction: difference in condition effect between factor levels" = "interaction",
+              "Condition effect within selected interaction level" = "condition_at_interaction",
+              "Custom DESeq2 result name" = "custom_name"
+            ),
+            selected = "interaction",
+            selectize = FALSE
+          ),
+          textInput("custom_results_name", "Custom DESeq2 result name", value = ""),
+          div(class = "soft-note", "Adjustment factors are included as additive terms. Interaction mode uses condition + interaction factor + condition:interaction factor. Custom names must match DESeq2 resultsNames().")
+        ),
         checkboxInput("use_preprocessed_counts", "Use CPM-filtered counts for DESeq2", value = TRUE),
         numericInput("min_total_count", "Minimum total count after preprocessing", value = 0, min = 0, step = 1)
       ),
@@ -939,6 +1306,41 @@ server <- function(input, output, session) {
   effective_lfc_cutoff <- reactive({
     req(input$min_fold_change)
     log2(max(input$min_fold_change, 1))
+  })
+
+  selected_adjustment_cols <- reactive({
+    if (!identical(input$input_type, "counts")) {
+      return(NULL)
+    }
+    columns <- c(
+      if (!is.null(input$batch_col) && !identical(input$batch_col, "__none__")) input$batch_col else NULL,
+      if (is.null(input$adjustment_cols)) NULL else input$adjustment_cols
+    )
+    columns <- normalize_design_columns(columns)
+    if (!is.null(input$condition_col)) {
+      columns <- setdiff(columns, input$condition_col)
+    }
+    if (isTRUE(input$use_interaction_design) && !is.null(input$interaction_col) && !identical(input$interaction_col, "__none__")) {
+      columns <- setdiff(columns, input$interaction_col)
+    }
+    columns
+  })
+
+  selected_interaction_col <- reactive({
+    if (!identical(input$input_type, "counts") || !isTRUE(input$use_interaction_design)) {
+      return(NULL)
+    }
+    if (is.null(input$interaction_col) || identical(input$interaction_col, "__none__")) {
+      return(NULL)
+    }
+    input$interaction_col
+  })
+
+  selected_deseq_contrast_mode <- reactive({
+    if (!identical(input$input_type, "counts") || !isTRUE(input$use_interaction_design)) {
+      return("condition")
+    }
+    if (is.null(input$deseq_contrast_mode)) "condition" else input$deseq_contrast_mode
   })
 
   read_primary_raw <- reactive({
@@ -1064,10 +1466,24 @@ server <- function(input, output, session) {
     )
 
     if (identical(input$input_type, "counts")) {
+      factor_choices <- setdiff(choices, selected_condition)
       updateSelectInput(
         session,
         "batch_col",
-        choices = c("None" = "__none__", choices),
+        choices = c("None" = "__none__", factor_choices),
+        selected = "__none__"
+      )
+      updateSelectizeInput(
+        session,
+        "adjustment_cols",
+        choices = factor_choices,
+        selected = character(),
+        server = FALSE
+      )
+      updateSelectInput(
+        session,
+        "interaction_col",
+        choices = c("None" = "__none__", factor_choices),
         selected = "__none__"
       )
     }
@@ -1085,6 +1501,41 @@ server <- function(input, output, session) {
 
     updateSelectInput(session, "reference_level", choices = levels_found, selected = selected_reference)
     updateSelectInput(session, "treatment_level", choices = levels_found, selected = selected_treatment)
+  })
+
+  observe({
+    req(input$input_type)
+    req(identical(input$input_type, "counts"))
+    metadata <- matrix_metadata()
+    req(input$condition_col)
+    choices <- setdiff(analysis_columns(metadata), input$condition_col)
+
+    current_batch <- if (!is.null(input$batch_col) && input$batch_col %in% choices) input$batch_col else "__none__"
+    current_adjustments <- intersect(if (is.null(input$adjustment_cols)) character() else input$adjustment_cols, choices)
+    current_interaction <- if (!is.null(input$interaction_col) && input$interaction_col %in% choices) input$interaction_col else "__none__"
+
+    updateSelectInput(session, "batch_col", choices = c("None" = "__none__", choices), selected = current_batch)
+    updateSelectizeInput(session, "adjustment_cols", choices = choices, selected = current_adjustments, server = FALSE)
+    updateSelectInput(session, "interaction_col", choices = c("None" = "__none__", choices), selected = current_interaction)
+  })
+
+  observe({
+    req(input$input_type)
+    req(identical(input$input_type, "counts"))
+    req(input$interaction_col)
+    if (identical(input$interaction_col, "__none__")) {
+      updateSelectInput(session, "interaction_reference_level", choices = character(), selected = character())
+      updateSelectInput(session, "interaction_comparison_level", choices = character(), selected = character())
+      return()
+    }
+
+    metadata <- matrix_metadata()
+    req(input$interaction_col %in% names(metadata))
+    levels_found <- condition_levels(metadata, input$interaction_col)
+    selected_reference <- levels_found[1]
+    selected_comparison <- if (length(levels_found) >= 2) levels_found[2] else levels_found[1]
+    updateSelectInput(session, "interaction_reference_level", choices = levels_found, selected = selected_reference)
+    updateSelectInput(session, "interaction_comparison_level", choices = levels_found, selected = selected_comparison)
   })
 
   output$input_status <- renderUI({
@@ -1118,8 +1569,19 @@ server <- function(input, output, session) {
       }
     )
 
+    if (!loaded) {
+      return(diagnostic_alert(
+        message,
+        severity = "warning",
+        input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+        input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+        input_type = input$input_type,
+        context = "input upload"
+      ))
+    }
+
     div(
-      class = if (loaded) "alert-block" else "alert-block warning",
+      class = "alert-block",
       message
     )
   })
@@ -1161,7 +1623,14 @@ server <- function(input, output, session) {
         )
       },
       error = function(err) {
-        div(class = "alert-block warning", conditionMessage(err))
+        diagnostic_alert(
+          conditionMessage(err),
+          severity = "warning",
+          input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+          input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+          input_type = input$input_type,
+          context = "annotation"
+        )
       }
     )
   })
@@ -1203,102 +1672,177 @@ server <- function(input, output, session) {
   })
 
   output$preflight_metrics <- renderUI({
-    if (input$input_type %in% matrix_modes) {
-      values <- matrix_values()
-      metadata <- matrix_metadata()
+    tryCatch(
+      {
+        if (input$input_type %in% matrix_modes) {
+          values <- matrix_values()
+          metadata <- matrix_metadata()
 
-      return(
+          return(
+            div(
+              class = "metric-grid",
+              div(class = "metric", span("Genes"), strong(format(nrow(values), big.mark = ","))),
+              div(class = "metric", span("Samples"), strong(format(ncol(values), big.mark = ","))),
+              div(class = "metric", span("Metadata rows"), strong(format(nrow(metadata), big.mark = ","))),
+              div(class = "metric", span("Mode"), strong(if (input$input_type == "counts") "DESeq2" else "Expression"))
+            )
+          )
+        }
+
+        fc <- fold_change_preview()
+        has_padj <- any(!is.na(fc$result_table$padj))
         div(
           class = "metric-grid",
-          div(class = "metric", span("Genes"), strong(format(nrow(values), big.mark = ","))),
-          div(class = "metric", span("Samples"), strong(format(ncol(values), big.mark = ","))),
-          div(class = "metric", span("Metadata rows"), strong(format(nrow(metadata), big.mark = ","))),
-          div(class = "metric", span("Mode"), strong(if (input$input_type == "counts") "DESeq2" else "Expression"))
+          div(class = "metric", span("Genes"), strong(format(nrow(fc$result_table), big.mark = ","))),
+          div(class = "metric", span("Fold-change scale"), strong(fc$fold_change_scale)),
+          div(class = "metric", span("Adjusted p-values"), strong(if (has_padj) "Yes" else "No")),
+          div(class = "metric", span("Mode"), strong("Table"))
         )
-      )
-    }
-
-    fc <- fold_change_preview()
-    has_padj <- any(!is.na(fc$result_table$padj))
-    div(
-      class = "metric-grid",
-      div(class = "metric", span("Genes"), strong(format(nrow(fc$result_table), big.mark = ","))),
-      div(class = "metric", span("Fold-change scale"), strong(fc$fold_change_scale)),
-      div(class = "metric", span("Adjusted p-values"), strong(if (has_padj) "Yes" else "No")),
-      div(class = "metric", span("Mode"), strong("Table"))
+      },
+      error = function(err) {
+        diagnostic_alert(
+          conditionMessage(err),
+          severity = "warning",
+          input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+          input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+          input_type = input$input_type,
+          context = "preflight"
+        )
+      }
     )
   })
 
   output$preflight_table <- renderTable({
-    if (input$input_type %in% matrix_modes) {
-      metadata <- matrix_metadata()
-      req(input$condition_col)
-      req(input$condition_col %in% names(metadata))
+    tryCatch(
+      {
+        if (input$input_type %in% matrix_modes) {
+          metadata <- matrix_metadata()
+          req(input$condition_col)
+          req(input$condition_col %in% names(metadata))
 
-      condition_counts <- as.data.frame(table(metadata[[input$condition_col]]), stringsAsFactors = FALSE)
-      names(condition_counts) <- c("group", "samples")
-      return(condition_counts)
-    }
+          condition_counts <- as.data.frame(table(metadata[[input$condition_col]]), stringsAsFactors = FALSE)
+          names(condition_counts) <- c("group", "samples")
+          return(condition_counts)
+        }
 
-    fc <- fold_change_preview()
-    data.frame(
-      field = c("fold_change_column", "adjusted_p_column"),
-      value = c(fc$fold_change_column, if (is.null(fc$adjusted_p_column)) "not supplied" else fc$adjusted_p_column),
-      stringsAsFactors = FALSE
+        fc <- fold_change_preview()
+        data.frame(
+          field = c("fold_change_column", "adjusted_p_column"),
+          value = c(fc$fold_change_column, if (is.null(fc$adjusted_p_column)) "not supplied" else fc$adjusted_p_column),
+          stringsAsFactors = FALSE
+        )
+      },
+      error = function(err) {
+        issue <- diagnose_uploaded_table(
+          input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+          input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+          input_type = input$input_type
+        )
+        if (is.null(issue) || !nzchar(issue)) {
+          issue <- conditionMessage(err)
+        }
+        if (is.null(issue) || !nzchar(issue)) {
+          issue <- "Input could not be summarized. Check the diagnostic card above."
+        }
+        data.frame(field = "Input issue", value = issue, stringsAsFactors = FALSE)
+      }
     )
   })
 
   output$preflight_warnings <- renderUI({
-    warnings <- character()
-    info_notes <- character()
+    tryCatch(
+      {
+        warnings <- character()
+        info_notes <- character()
 
-    if (input$input_type %in% matrix_modes) {
-      values <- matrix_values()
-      metadata <- matrix_metadata()
-      req(input$condition_col, input$treatment_level, input$reference_level)
+        if (input$input_type %in% matrix_modes) {
+          values <- matrix_values()
+          metadata <- matrix_metadata()
+          req(input$condition_col, input$treatment_level, input$reference_level)
 
-      batch_col <- if (identical(input$batch_col, "__none__") || !identical(input$input_type, "counts")) NULL else input$batch_col
-      warnings <- attr(metadata, "dge_warnings")
-      validation_warnings <- tryCatch(
-        validate_analysis_settings(
-          abs(round(values)),
-          metadata,
-          input$condition_col,
-          input$treatment_level,
-          input$reference_level,
-          batch_col,
-          if (identical(input$input_type, "counts")) input$min_total_count else 0
-        ),
-        error = function(err) conditionMessage(err)
-      )
-      warnings <- unique(c(warnings, validation_warnings))
+          batch_col <- if (identical(input$batch_col, "__none__") || !identical(input$input_type, "counts")) NULL else input$batch_col
+          adjustment_cols <- if (identical(input$input_type, "counts")) selected_adjustment_cols() else NULL
+          interaction_col <- if (identical(input$input_type, "counts")) selected_interaction_col() else NULL
+          warnings <- attr(metadata, "dge_warnings")
+          validation_warnings <- tryCatch(
+            validate_analysis_settings(
+              abs(round(values)),
+              metadata,
+              input$condition_col,
+              input$treatment_level,
+              input$reference_level,
+              batch_col,
+              adjustment_cols = adjustment_cols,
+              interaction_col = interaction_col,
+              min_total_count = if (identical(input$input_type, "counts")) input$min_total_count else 0
+            ),
+            error = function(err) conditionMessage(err)
+          )
+          warnings <- unique(c(warnings, validation_warnings))
 
-      if (identical(input$input_type, "normalized")) {
-        info_notes <- c(
-          info_notes,
-          "Ready: decimal expression values are allowed in Normalized expression mode. This mode computes group means, log2 fold changes, Welch t-test p-values, and BH-adjusted p-values."
+          if (identical(input$input_type, "counts")) {
+            design_note <- sprintf(
+              "DESeq2 design: %s.",
+              if (!is.null(interaction_col)) {
+                sprintf(
+                  "~ %scondition + interaction + condition:interaction",
+                  if (length(adjustment_cols) > 0) "adjustment factors + " else ""
+                )
+              } else if (length(adjustment_cols) > 0) {
+                "~ adjustment factors + condition"
+              } else {
+                "~ condition"
+              }
+            )
+            info_notes <- c(info_notes, design_note)
+            if (!is.null(interaction_col)) {
+              info_notes <- c(
+                info_notes,
+                "Interaction contrasts test whether the condition effect changes across the selected interaction factor; additive adjustment factors control for those effects in the DESeq2 model."
+              )
+            } else if (length(adjustment_cols) > 0) {
+              info_notes <- c(info_notes, "Selected adjustment factors are included as additive DESeq2 model terms to control for those effects.")
+            }
+          }
+
+          if (identical(input$input_type, "normalized")) {
+            info_notes <- c(
+              info_notes,
+              "Ready: decimal expression values are allowed in Normalized expression mode. This mode computes group means, log2 fold changes, Welch t-test p-values, and BH-adjusted p-values."
+            )
+          }
+        } else {
+          fc <- fold_change_preview()
+          warnings <- c(
+            "Fold-change mode accepts result tables and does not run DESeq2.",
+            if (!any(!is.na(fc$result_table$padj))) "No adjusted p-values are available, so significance calls are disabled."
+          )
+        }
+
+        if (length(warnings) == 0) {
+          return(div(
+            class = "alert-block",
+            tags$div("Inputs passed the current checks."),
+            if (length(info_notes) > 0) tags$ul(lapply(unique(info_notes), tags$li))
+          ))
+        }
+
+        div(
+          class = "alert-block warning",
+          tags$ul(lapply(warnings, tags$li)),
+          if (length(info_notes) > 0) tags$ul(lapply(unique(info_notes), tags$li))
+        )
+      },
+      error = function(err) {
+        diagnostic_alert(
+          conditionMessage(err),
+          severity = "warning",
+          input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+          input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+          input_type = input$input_type,
+          context = "preflight"
         )
       }
-    } else {
-      fc <- fold_change_preview()
-      warnings <- c(
-        "Fold-change mode accepts result tables and does not run DESeq2.",
-        if (!any(!is.na(fc$result_table$padj))) "No adjusted p-values are available, so significance calls are disabled."
-      )
-    }
-
-    if (length(warnings) == 0) {
-      return(div(
-        class = "alert-block",
-        tags$div("Inputs passed the current checks."),
-        if (length(info_notes) > 0) tags$ul(lapply(unique(info_notes), tags$li))
-      ))
-    }
-
-    div(
-      class = "alert-block warning",
-      tags$ul(lapply(warnings, tags$li)),
-      if (length(info_notes) > 0) tags$ul(lapply(unique(info_notes), tags$li))
     )
   })
 
@@ -1323,7 +1867,14 @@ server <- function(input, output, session) {
         )
       },
       error = function(err) {
-        div(class = "alert-block warning", conditionMessage(err))
+        diagnostic_alert(
+          conditionMessage(err),
+          severity = "warning",
+          input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+          input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+          input_type = input$input_type,
+          context = "preprocessing"
+        )
       }
     )
   })
@@ -1357,6 +1908,21 @@ server <- function(input, output, session) {
   pathway_error <- reactiveVal(NULL)
   wgcna_result <- reactiveVal(NULL)
   wgcna_error <- reactiveVal(NULL)
+
+  reset_app_state <- function() {
+    analysis_result(NULL)
+    analysis_error(NULL)
+    pathway_result(NULL)
+    pathway_error(NULL)
+    wgcna_result(NULL)
+    wgcna_error(NULL)
+    updateTabsetPanel(session, "main_tabs", selected = "Preflight")
+  }
+
+  observeEvent(input$refresh_app, {
+    reset_app_state()
+    session$sendCustomMessage("transcriptoscope-refresh", list(reset = TRUE))
+  }, ignoreInit = TRUE)
 
   significant_pathway_results <- function(pathway) {
     req(pathway)
@@ -1443,6 +2009,34 @@ server <- function(input, output, session) {
     )
   }
 
+  save_pathway_cnetplot_file <- function(file, pathway, format = c("png", "tiff"), dpi = 300) {
+    format <- match.arg(format)
+    plot <- make_pathway_cnetplot(
+      pathway,
+      top_n = pathway_cnet_top_n(),
+      max_genes_per_pathway = pathway_cnet_max_genes(),
+      padj_cutoff = pathway$padj_cutoff,
+      show_ids = isTRUE(input$pathway_show_ids)
+    )
+    args <- list(
+      filename = file,
+      plot = plot,
+      width = 12,
+      height = 8.5,
+      units = "in",
+      dpi = dpi,
+      bg = "white",
+      limitsize = FALSE
+    )
+    if (identical(format, "png")) {
+      args$device <- "png"
+    } else {
+      args$device <- "tiff"
+      args$compression <- "lzw"
+    }
+    do.call(ggplot2::ggsave, args)
+  }
+
   observeEvent(input$run_analysis, {
     analysis_result(NULL)
     analysis_error(NULL)
@@ -1470,6 +2064,12 @@ server <- function(input, output, session) {
               treatment_level = input$treatment_level,
               reference_level = input$reference_level,
               batch_col = if (identical(input$batch_col, "__none__")) NULL else input$batch_col,
+              adjustment_cols = if (is.null(input$adjustment_cols)) NULL else input$adjustment_cols,
+              interaction_col = selected_interaction_col(),
+              interaction_reference_level = if (is.null(input$interaction_reference_level)) NULL else input$interaction_reference_level,
+              interaction_comparison_level = if (is.null(input$interaction_comparison_level)) NULL else input$interaction_comparison_level,
+              contrast_mode = selected_deseq_contrast_mode(),
+              custom_results_name = if (is.null(input$custom_results_name)) NULL else input$custom_results_name,
               min_total_count = input$min_total_count,
               alpha = input$alpha
             ),
@@ -1510,7 +2110,14 @@ server <- function(input, output, session) {
   output$analysis_status <- renderUI({
     err <- analysis_error()
     if (!is.null(err)) {
-      return(div(class = "alert-block error", err))
+      return(diagnostic_alert(
+        err,
+        severity = "error",
+        input_name = if (!is.null(input$count_file)) input$count_file$name else NULL,
+        input_path = if (!is.null(input$count_file)) input$count_file$datapath else NULL,
+        input_type = input$input_type,
+        context = "analysis"
+      ))
     }
 
     result <- analysis_result()
@@ -1747,7 +2354,13 @@ server <- function(input, output, session) {
         div(class = "alert-block", note)
       },
       error = function(err) {
-        div(class = "alert-block warning", conditionMessage(err))
+        diagnostic_alert(
+          conditionMessage(err),
+          severity = "warning",
+          input_name = if (!is.null(input$geneset_file)) input$geneset_file$name else NULL,
+          input_type = input$input_type,
+          context = "ORA enrichment"
+        )
       }
     )
   })
@@ -1772,7 +2385,13 @@ server <- function(input, output, session) {
     }
     ora <- tryCatch(enrichment_result(), error = function(err) err)
     if (inherits(ora, "error")) {
-      return(div(class = "alert-block warning", conditionMessage(ora)))
+      return(diagnostic_alert(
+        conditionMessage(ora),
+        severity = "warning",
+        input_name = if (!is.null(input$geneset_file)) input$geneset_file$name else NULL,
+        input_type = input$input_type,
+        context = "GO DAG"
+      ))
     }
     go_rows <- ora$results[grepl("^GO:[0-9]{7}$", ora$results$term_id), , drop = FALSE]
     if (nrow(go_rows) == 0) {
@@ -1809,6 +2428,28 @@ server <- function(input, output, session) {
 
   output$go_dag_plot <- renderPlot({
     ora <- enrichment_result()
+    go_rows <- ora$results[grepl("^GO:[0-9]{7}$", ora$results$term_id), , drop = FALSE]
+    if (nrow(go_rows) == 0) {
+      graphics::plot.new()
+      graphics::text(
+        0.5,
+        0.5,
+        "Choose a GO collection to draw the GO DAG plot.",
+        cex = 1.1
+      )
+      return(invisible(NULL))
+    }
+    significant <- go_rows[!is.na(go_rows$padj) & go_rows$padj < go_dag_padj_cutoff(), , drop = FALSE]
+    if (nrow(significant) == 0) {
+      graphics::plot.new()
+      graphics::text(
+        0.5,
+        0.5,
+        sprintf("No GO terms pass DAG FDR < %s.", go_dag_padj_cutoff()),
+        cex = 1.1
+      )
+      return(invisible(NULL))
+    }
     make_go_dag_plot(
       ora_table = ora$results,
       go_ontology = go_ontology(),
@@ -1902,11 +2543,21 @@ server <- function(input, output, session) {
       return(div(class = "alert-block warning", "Run the DGE analysis first. This tab automatically ranks the current result genes."))
     }
     if (!requireNamespace("fgsea", quietly = TRUE)) {
-      return(div(class = "alert-block error", "The fgsea package is not installed. Run Install_Packages.bat, then restart TranscriptoScope."))
+      return(diagnostic_alert(
+        "The fgsea package is not installed. Run Install_Packages.bat, then restart TranscriptoScope.",
+        severity = "error",
+        input_type = input$input_type,
+        context = "pathway analysis"
+      ))
     }
     err <- pathway_error()
     if (!is.null(err)) {
-      return(div(class = "alert-block warning", err))
+      return(diagnostic_alert(
+        err,
+        severity = "warning",
+        input_type = input$input_type,
+        context = "pathway analysis"
+      ))
     }
     pathway <- pathway_result()
     if (is.null(pathway)) {
@@ -2089,11 +2740,21 @@ server <- function(input, output, session) {
       return(div(class = "alert-block warning", "WGCNA needs sample-level count or expression data. Fold-change-only inputs cannot be used."))
     }
     if (!requireNamespace("WGCNA", quietly = TRUE)) {
-      return(div(class = "alert-block error", "The WGCNA package is not installed. Run Install_Packages.bat, then restart TranscriptoScope."))
+      return(diagnostic_alert(
+        "The WGCNA package is not installed. Run Install_Packages.bat, then restart TranscriptoScope.",
+        severity = "error",
+        input_type = input$input_type,
+        context = "WGCNA"
+      ))
     }
     err <- wgcna_error()
     if (!is.null(err)) {
-      return(div(class = "alert-block warning", err))
+      return(diagnostic_alert(
+        err,
+        severity = "warning",
+        input_type = input$input_type,
+        context = "WGCNA"
+      ))
     }
     wgcna <- wgcna_result()
     if (is.null(wgcna)) {
@@ -2170,6 +2831,66 @@ server <- function(input, output, session) {
     }
     do.call(div, c(list(class = "download-grid"), controls))
   })
+
+  output$example_download_controls <- renderUI({
+    controls <- lapply(example_download_specs, function(spec) downloadButton(spec$id, spec$label))
+    do.call(div, c(list(class = "download-grid"), controls))
+  })
+
+  copy_example_input <- function(example_name, destination) {
+    source <- file.path(app_dir, "sample_data", example_name)
+    validate(need(file.exists(source), sprintf("The bundled example file %s is missing.", example_name)))
+    file.copy(source, destination, overwrite = TRUE)
+  }
+
+  for (spec in example_download_specs) {
+    local({
+      spec <- spec
+      output[[spec$id]] <- downloadHandler(
+        filename = function() {
+          if (identical(spec$id, "download_example_bundle")) {
+            sprintf("transcriptoscope_example_inputs_%s.zip", format(Sys.Date(), "%Y%m%d"))
+          } else {
+            sprintf("transcriptoscope_%s", spec$file)
+          }
+        },
+        content = function(file) {
+          if (!identical(spec$id, "download_example_bundle")) {
+            copy_example_input(spec$file, file)
+            return(invisible(TRUE))
+          }
+
+          example_dir <- file.path(app_dir, "sample_data")
+          validate(need(dir.exists(example_dir), "The bundled sample_data folder is missing."))
+          bundle_dir <- file.path(tempdir(), sprintf("transcriptoscope_examples_%s", as.integer(Sys.time())))
+          dir.create(bundle_dir, recursive = TRUE, showWarnings = FALSE)
+          example_files <- stats::na.omit(vapply(example_download_specs, `[[`, character(1), "file"))
+          missing_examples <- example_files[!file.exists(file.path(example_dir, example_files))]
+          validate(need(length(missing_examples) == 0, paste("Missing bundled example file(s):", paste(missing_examples, collapse = ", "))))
+          file.copy(file.path(example_dir, example_files), bundle_dir, overwrite = TRUE)
+          writeLines(
+            c(
+              "TranscriptoScope example input files",
+              "",
+              "counts.csv: raw integer read-count matrix for DESeq2 mode.",
+              "metadata.csv: sample metadata matching the count and expression matrix column names.",
+              "normalized_expression.csv: decimal expression matrix for normalized-expression mode.",
+              "fold_changes_padj.csv: table for fold changes and adjusted p-values mode.",
+              "fold_changes_only.csv: table for fold-changes-only mode.",
+              "gene_sets.csv: custom term-to-gene example for ORA or ranked pathway uploads.",
+              "",
+              "Keep the first row as headers. Keep gene IDs in the first column of matrix-style files."
+            ),
+            file.path(bundle_dir, "README_example_inputs.txt")
+          )
+          oldwd <- setwd(bundle_dir)
+          on.exit(setwd(oldwd), add = TRUE)
+          utils::zip(zipfile = file, files = list.files(bundle_dir), flags = "-q")
+          invisible(TRUE)
+        }
+      )
+    })
+  }
 
   output$download_results <- downloadHandler(
     filename = function() {
@@ -2320,20 +3041,19 @@ server <- function(input, output, session) {
     content = function(file) {
       pathway <- pathway_result()
       req(pathway)
-      ggplot2::ggsave(
-        filename = file,
-        plot = make_pathway_cnetplot(
-          pathway,
-          top_n = pathway_cnet_top_n(),
-          max_genes_per_pathway = pathway_cnet_max_genes(),
-          padj_cutoff = pathway$padj_cutoff,
-          show_ids = isTRUE(input$pathway_show_ids)
-        ),
-        width = 9,
-        height = 7,
-        dpi = 300,
-        bg = "white"
-      )
+      save_pathway_cnetplot_file(file, pathway, format = "png", dpi = 300)
+    }
+  )
+
+  output$download_pathway_cnetplot_tiff <- downloadHandler(
+    filename = function() {
+      sprintf("pathway_cnetplot_%s.tiff", format(Sys.Date(), "%Y%m%d"))
+    },
+    contentType = "image/tiff",
+    content = function(file) {
+      pathway <- pathway_result()
+      req(pathway)
+      save_pathway_cnetplot_file(file, pathway, format = "tiff", dpi = 600)
     }
   )
 
@@ -2510,6 +3230,15 @@ server <- function(input, output, session) {
           reference_group = input$reference_level,
           comparison_group = input$treatment_level,
           batch_column = if (identical(input$batch_col, "__none__")) "none" else input$batch_col,
+          adjustment_columns = paste(selected_adjustment_cols(), collapse = ";"),
+          interaction_column = if (is.null(selected_interaction_col())) "none" else selected_interaction_col(),
+          interaction_reference_level = if (is.null(input$interaction_reference_level)) NA_character_ else input$interaction_reference_level,
+          interaction_comparison_level = if (is.null(input$interaction_comparison_level)) NA_character_ else input$interaction_comparison_level,
+          deseq_contrast_mode = selected_deseq_contrast_mode(),
+          custom_deseq_result_name = if (is.null(input$custom_results_name)) NA_character_ else input$custom_results_name,
+          fitted_design_formula = if (is.null(export_result$design_formula)) NA_character_ else export_result$design_formula,
+          deseq_result_contrast = if (is.null(export_result$result_contrast_used)) NA_character_ else export_result$result_contrast_used,
+          deseq_result_name = if (is.null(export_result$result_name_used)) NA_character_ else export_result$result_name_used,
           adjusted_p_value_threshold = input$alpha,
           minimum_fold_change = input$min_fold_change,
           absolute_log2_fold_change_cutoff = effective_lfc_cutoff(),
@@ -2636,20 +3365,11 @@ server <- function(input, output, session) {
         if (!is.null(cnet_edges) && nrow(cnet_edges) > 0) {
           utils::write.csv(cnet_edges, file.path(bundle_dir, "pathway_cnetplot_edges.csv"), row.names = FALSE)
           tryCatch(
-            ggplot2::ggsave(
-              filename = file.path(bundle_dir, "pathway_cnetplot.png"),
-              plot = make_pathway_cnetplot(
-                pathway,
-                top_n = pathway_cnet_top_n(),
-                max_genes_per_pathway = pathway_cnet_max_genes(),
-                padj_cutoff = pathway$padj_cutoff,
-                show_ids = isTRUE(input$pathway_show_ids)
-              ),
-              width = 9,
-              height = 7,
-              dpi = 220,
-              bg = "white"
-            ),
+            save_pathway_cnetplot_file(file.path(bundle_dir, "pathway_cnetplot.png"), pathway, format = "png", dpi = 300),
+            error = function(err) NULL
+          )
+          tryCatch(
+            save_pathway_cnetplot_file(file.path(bundle_dir, "pathway_cnetplot.tiff"), pathway, format = "tiff", dpi = 600),
             error = function(err) NULL
           )
         }

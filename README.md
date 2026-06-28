@@ -30,8 +30,8 @@ If you use TranscriptoScope in research, cite the specific software release and 
 - Upload fold-change tables with or without adjusted p-values
 - Upload sample metadata as `.csv`, `.tsv`, or `.txt`, or let the app infer sample groups from names such as `condition_Rep1`
 - Validate matching sample names between counts and metadata
-- Select condition, reference group, comparison group, and optional batch column
-- Run DESeq2 with `~ condition` or `~ batch + condition`
+- Select condition, reference group, comparison group, optional adjustment factors, and optional interaction factors
+- Run DESeq2 with `~ condition`, additive adjusted designs such as `~ batch + condition`, or interaction designs such as `~ batch + condition + factor + condition:factor`
 - Analyze normalized expression matrices with group means, log2 fold changes, Welch t-test p-values, and BH-adjusted p-values
 - Visualize fold-change tables without requiring raw samples
 - Export differential expression results and normalized counts
@@ -73,6 +73,8 @@ treat_2,treated,B
 ```
 
 The sample names in the count-matrix columns must match the `sample_id` values in metadata.
+
+For count-based DESeq2 analysis, adjustment factors are included as additive model terms. Use them when you want to control for a known factor such as batch, library type, donor, time block, or sequencing run. Advanced interaction mode adds `condition:factor` to the DESeq2 design and lets you report either the interaction coefficient, the condition effect within a selected interaction level, or a custom DESeq2 result name.
 
 ### Normalized Expression Data
 
@@ -177,6 +179,7 @@ The Downloads tab includes a `Result Bundle` zip. Each bundle contains the expor
 - `reproduce_analysis.Rmd` - executable R Markdown code for rerunning the exported analysis from the bundle files
 - `reproduce_analysis.R` - the same rerun code as a plain R script
 - `analysis_count_matrix.csv` and `analysis_metadata.csv` when the run used DESeq2 counts, containing the exact post-preprocessing/post-filtering data used by the model
+- recorded DESeq2 design details, including adjustment columns, interaction factor, fitted design formula, and reported contrast when an adjusted or interaction design was used
 - `enrichment_gene_sets_used.csv` and `pathway_gene_sets_used.csv` when ORA or pathway analysis was run, containing the matched gene-set tables used by those tabs
 - `wgcna_module_summary.csv`, `wgcna_gene_modules.csv`, `wgcna_module_trait_correlations.csv`, and `wgcna_module_eigengenes.csv` when WGCNA was run
 - `session_info.txt` with the R and package versions from the export session
